@@ -98,11 +98,14 @@ export class WhiteboardAction extends Component {
 
     _resizeCanvas() {
         if (!this.canvas || !this.wrapRef.el) return;
+
         const rect = this.wrapRef.el.getBoundingClientRect();
         const w = Math.max(300, Math.floor(rect.width));
         const h = Math.max(300, Math.floor(rect.height));
-        this.canvas.setWidth(w);
-        this.canvas.setHeight(h);
+
+        // use setDimensions + calcOffset (better with scrolling containers)
+        this.canvas.setDimensions({ width: w, height: h });
+        this.canvas.calcOffset();
         this.canvas.requestRenderAll();
     }
 

@@ -1,20 +1,54 @@
 .o_whiteboard_action {
+  /* Theme tokens */
+  --wb-accent: #6d5efc;
+  --wb-accent-2: #21d4fd;
+  --wb-ink: #0f172a;
+  --wb-soft: rgba(255, 255, 255, 0.72);
+  --wb-soft-2: rgba(255, 255, 255, 0.55);
+  --wb-border: rgba(15, 23, 42, 0.12);
+  --wb-shadow: 0 10px 30px rgba(2, 6, 23, 0.12);
+
   height: 100%;
+  min-height: 0; /* important for scroll inside flex layouts */
   display: flex;
   flex-direction: column;
+
+  /* Astonishing background */
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(109, 94, 252, 0.22), transparent 60%),
+    radial-gradient(900px 500px at 90% 15%, rgba(33, 212, 253, 0.18), transparent 55%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2ff 45%, #f1f5f9 100%);
 }
 
+/* ---------- Toolbar (glass, sticky, scrollable on mobile) ---------- */
 .o_whiteboard_toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid #e5e5e5;
-  background: white;
+  position: sticky;
+  top: 0;
+  z-index: 10;
 
-  .o_whiteboard_toolbar_left,
-  .o_whiteboard_toolbar_right {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--wb-border);
+
+  background: linear-gradient(180deg, var(--wb-soft), var(--wb-soft-2));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 18px rgba(2, 6, 23, 0.06);
+
+  .o_whiteboard_toolbar_scroll {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+
+    /* horizontal scroll for narrow screens */
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+  }
+
+  .o_wb_group {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -22,41 +56,271 @@
   }
 
   .o_whiteboard_title {
-    font-weight: 600;
-    margin-right: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+    color: var(--wb-ink);
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    box-shadow: 0 6px 16px rgba(2, 6, 23, 0.06);
   }
 
   .o_whiteboard_label {
     font-size: 12px;
-    opacity: 0.8;
-    margin-left: 6px;
+    font-weight: 700;
+    color: rgba(15, 23, 42, 0.75);
+    margin-right: 6px;
   }
 
   .o_whiteboard_name {
-    width: 220px;
+    width: 240px;
+    border-radius: 12px;
+    border: 1px solid rgba(15, 23, 42, 0.10);
+    background: rgba(255, 255, 255, 0.75);
+    box-shadow: 0 6px 16px rgba(2, 6, 23, 0.05);
+  }
+
+  .o_wb_field {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 14px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    background: rgba(255, 255, 255, 0.55);
+  }
+
+  .o_wb_field_icon {
+    opacity: 0.65;
+  }
+
+  input[type="color"] {
+    width: 34px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  input[type="range"] {
+    width: 160px;
+    accent-color: var(--wb-accent);
+  }
+
+  .o_wb_divider {
+    width: 1px;
+    height: 24px;
+    background: rgba(15, 23, 42, 0.14);
+    margin: 0 4px;
+    border-radius: 1px;
+  }
+
+  /* Buttons: cute + punchy */
+  .o_wb_btn {
+    border-radius: 999px !important;
+    padding: 7px 12px;
+    border-width: 1px;
+    box-shadow: 0 8px 16px rgba(2, 6, 23, 0.06);
+    transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+
+    &:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 24px rgba(2, 6, 23, 0.10);
+      filter: saturate(1.05);
+    }
+
+    &:active {
+      transform: translateY(0px);
+      box-shadow: 0 8px 16px rgba(2, 6, 23, 0.08);
+    }
+
+    &:focus-visible {
+      outline: 3px solid rgba(109, 94, 252, 0.35);
+      outline-offset: 2px;
+    }
+  }
+
+  .o_wb_btn_primary {
+    background: linear-gradient(135deg, var(--wb-accent), var(--wb-accent-2)) !important;
+    border: 0 !important;
+    color: white !important;
   }
 }
 
+/* ---------- Body + scroll ---------- */
 .o_whiteboard_body {
   position: relative;
   flex: 1;
-  overflow: hidden;
-  background: #f7f7f7;
+  min-height: 0; /* critical for scroll containers inside flex */
+  overflow: auto; /* scroll enabled */
+  padding: 14px;
+
+  /* smoother feel */
+  scroll-behavior: smooth;
 }
 
+/* Nice scrollbars (WebKit) */
+.o_whiteboard_body::-webkit-scrollbar,
+.o_whiteboard_toolbar_scroll::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+.o_whiteboard_body::-webkit-scrollbar-thumb,
+.o_whiteboard_toolbar_scroll::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+  border-radius: 999px;
+}
+.o_whiteboard_body::-webkit-scrollbar-track,
+.o_whiteboard_toolbar_scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+}
+
+/* “Paper” stage: larger than viewport on small screens => real scroll */
+.o_whiteboard_stage {
+  /* On large screens it fills available width, on small it becomes wider => horizontal scroll */
+  width: 100%;
+  min-width: 1100px;
+
+  /* Height aims to feel like a board, but can exceed viewport => vertical scroll */
+  min-height: 720px;
+
+  margin: 0 auto;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow: var(--wb-shadow);
+
+  /* adorable “paper/grid” background */
+  background:
+    radial-gradient(800px 400px at 15% 10%, rgba(109, 94, 252, 0.10), transparent 60%),
+    radial-gradient(700px 380px at 85% 15%, rgba(33, 212, 253, 0.10), transparent 55%),
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.92));
+  background-size: auto, auto, 28px 28px, 28px 28px, auto;
+
+  padding: 10px;
+}
+
+/* Canvas takes full stage */
 .o_whiteboard_canvas {
   display: block;
   width: 100%;
   height: 100%;
+  border-radius: 14px;
 }
 
+/* Loading pill */
 .o_whiteboard_loading {
   position: absolute;
-  z-index: 5;
-  top: 12px;
-  left: 12px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: rgba(255,255,255,0.95);
-  border: 1px solid #e5e5e5;
+  z-index: 11;
+  top: 14px;
+  left: 14px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow: 0 12px 24px rgba(2, 6, 23, 0.10);
+  color: rgba(15, 23, 42, 0.85);
+}
+
+/* ---------- Responsive design ---------- */
+@media (max-width: 992px) {
+  .o_whiteboard_stage {
+    min-width: 980px;
+    min-height: 640px;
+  }
+  .o_whiteboard_toolbar .o_whiteboard_name {
+    width: 200px;
+  }
+}
+
+@media (max-width: 768px) {
+  .o_whiteboard_toolbar {
+    padding: 10px 10px;
+  }
+
+  /* Make toolbar scroll “feel” better on phone */
+  .o_whiteboard_toolbar .o_whiteboard_toolbar_scroll {
+    justify-content: flex-start;
+    gap: 10px;
+  }
+
+  /* Stage becomes larger than viewport => body scrolls */
+  .o_whiteboard_stage {
+    min-width: 900px;
+    min-height: 560px;
+  }
+
+  .o_whiteboard_toolbar .o_whiteboard_name {
+    width: 160px;
+  }
+
+  .o_whiteboard_toolbar input[type="range"] {
+    width: 130px;
+  }
+}
+
+@media (max-width: 480px) {
+  .o_whiteboard_toolbar .o_whiteboard_title {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+
+  .o_whiteboard_toolbar .o_wb_btn {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .o_whiteboard_body {
+    padding: 10px;
+  }
+
+  .o_whiteboard_stage {
+    min-width: 820px;
+    min-height: 520px;
+    border-radius: 16px;
+  }
+}
+
+/* Optional: Dark-mode friendliness */
+@media (prefers-color-scheme: dark) {
+  .o_whiteboard_action {
+    background:
+      radial-gradient(1200px 600px at 10% 0%, rgba(109, 94, 252, 0.25), transparent 60%),
+      radial-gradient(900px 500px at 90% 15%, rgba(33, 212, 253, 0.18), transparent 55%),
+      linear-gradient(180deg, #0b1220 0%, #0f172a 55%, #0b1220 100%);
+  }
+  .o_whiteboard_toolbar {
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.75), rgba(15, 23, 42, 0.55));
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+
+    .o_whiteboard_title,
+    .o_wb_field,
+    .o_whiteboard_name {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(255, 255, 255, 0.10);
+      color: rgba(255, 255, 255, 0.88);
+    }
+    .o_whiteboard_label {
+      color: rgba(255, 255, 255, 0.72);
+    }
+  }
+
+  .o_whiteboard_stage {
+    border-color: rgba(255, 255, 255, 0.10);
+    background:
+      radial-gradient(800px 400px at 15% 10%, rgba(109, 94, 252, 0.16), transparent 60%),
+      radial-gradient(700px 380px at 85% 15%, rgba(33, 212, 253, 0.14), transparent 55%),
+      linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.35));
+    background-size: auto, auto, 28px 28px, 28px 28px, auto;
+  }
 }
