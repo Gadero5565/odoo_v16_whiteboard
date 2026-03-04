@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="odoo_whiteboard.WhiteboardAction" owl="1">
+        <div class="o_whiteboard_action">
+            <div class="o_whiteboard_toolbar">
+                <div class="o_whiteboard_toolbar_left">
+                    <span class="o_whiteboard_title">Whiteboard</span>
+
+                    <input class="form-control form-control-sm o_whiteboard_name"
+                           placeholder="Board name"
+                           t-model="state.boardName"/>
+
+                    <label class="o_whiteboard_label">Color</label>
+                    <input type="color" t-att-value="state.color" t-on-input="setColor"/>
+
+                    <label class="o_whiteboard_label">Width</label>
+                    <input type="range" min="1" max="40" t-att-value="state.width" t-on-input="setWidth"/>
+                </div>
+
+                <div class="o_whiteboard_toolbar_right">
+                    <button type="button" class="btn btn-secondary btn-sm" t-on-click="setPen">Pen</button>
+                    <button type="button" class="btn btn-secondary btn-sm" t-on-click="setEraser">Eraser</button>
+                    <button type="button" class="btn btn-secondary btn-sm" t-on-click="addText">Text</button>
+
+                    <button type="button" class="btn btn-outline-secondary btn-sm" t-on-click="undo">Undo</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" t-on-click="redo">Redo</button>
+
+                    <button type="button" class="btn btn-outline-danger btn-sm" t-on-click="clearCanvas">Clear</button>
+                    <button type="button" class="btn btn-primary btn-sm" t-on-click="save">Save</button>
+                    <button type="button" class="btn btn-outline-primary btn-sm" t-on-click="exportPNG">Export PNG</button>
+                </div>
+            </div>
+
+            <div class="o_whiteboard_body" t-ref="wrap">
+                <t t-if="state.loading">
+                    <div class="o_whiteboard_loading">
+                        <span class="fa fa-spinner fa-spin me-2"/> Loading whiteboard…
+                    </div>
+                </t>
+                <canvas t-ref="canvas" class="o_whiteboard_canvas"/>
+            </div>
+        </div>
+    </t>
+</templates>

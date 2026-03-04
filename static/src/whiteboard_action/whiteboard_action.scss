@@ -1,0 +1,62 @@
+.o_whiteboard_action {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.o_whiteboard_toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e5e5;
+  background: white;
+
+  .o_whiteboard_toolbar_left,
+  .o_whiteboard_toolbar_right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .o_whiteboard_title {
+    font-weight: 600;
+    margin-right: 8px;
+  }
+
+  .o_whiteboard_label {
+    font-size: 12px;
+    opacity: 0.8;
+    margin-left: 6px;
+  }
+
+  .o_whiteboard_name {
+    width: 220px;
+  }
+}
+
+.o_whiteboard_body {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: #f7f7f7;
+}
+
+.o_whiteboard_canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.o_whiteboard_loading {
+  position: absolute;
+  z-index: 5;
+  top: 12px;
+  left: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.95);
+  border: 1px solid #e5e5e5;
+}
