@@ -12,14 +12,16 @@ export class WhiteboardAction extends Component {
 
         this.canvasRef = useRef("canvas");
         this.wrapRef = useRef("wrap");
-
+        const params = this.props.action?.params || {};
+        this.initialBoardId = params.board_id || null;
         this.state = useState({
             loading: true,
             boardId: null,
             boardName: "My Whiteboard",
             color: "#111111",
             width: 4,
-            mode: "pen", // pen | eraser
+            mode: "pen",
+            boards: [],
         });
 
         this.undoStack = [];
@@ -29,6 +31,7 @@ export class WhiteboardAction extends Component {
         // Load Fabric from CDN (you can replace with any CDN/library)
         onWillStart(async () => {
             await loadJS("https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js");
+            await this._loadBoardsList();
         });
 
         onMounted(async () => {
@@ -201,33 +204,73 @@ export class WhiteboardAction extends Component {
         a.remove();
     }
 
+    async _loadBoardsList() {
+        const boards = await this.orm.call("whiteboard.board", "get_user_boards", []);
+        this.state.boards = boards;
+        // If we have an initial board ID, make sure it's in the list
+        if (this.state.boardId && !boards.find(b => b.id === this.state.boardId)) {
+            this.state.boardId = null;
+        }
+    }
+
+    onSelectBoard(ev) {
+        const boardId = parseInt(ev.target.value, 10);
+        if (!boardId) return;
+        this.state.boardId = boardId;
+        this._loadBoardFromServer(boardId);
+    }
+
     // ---------- Save/load (server) ----------
-    async _loadBoardFromServer() {
-        const res = await this.orm.call("whiteboard.board", "get_my_board", []);
+    async _loadBoardFromServer(boardId = null) {
+        let res;
+        if (boardId) {
+            res = await this.orm.call("whiteboard.board", "get_board_data", [boardId]);
+            if (res.error) {
+                this.notification.add(res.error, { type: "danger" });
+                return;
+            }
+        } else {
+            res = await this.orm.call("whiteboard.board", "get_my_board", []);
+        }
+
         this.state.boardId = res.id;
         this.state.boardName = res.name || "My Whiteboard";
 
         if (res.data_json) {
             await this._applyJSON(res.data_json, { pushHistory: true, resetRedo: true });
+        } else {
+            // Clear canvas for new empty board
+            this.canvas?.clear();
+            this._pushHistory(true);
         }
     }
 
     async save() {
-        if (!this.canvas || !this.state.boardId) return;
+            if (!this.canvas) return;
 
-        const data_json = JSON.stringify(this.canvas.toDatalessJSON());
+            const data_json = JSON.stringify(this.canvas.toDatalessJSON());
+            const thumbnail = this.canvas.toDataURL({ format: "png", multiplier: 0.2 });
 
-        // small thumbnail (fast)
-        const thumbnail = this.canvas.toDataURL({ format: "png", multiplier: 0.2 });
+            // Use current boardId or fallback to get_my_board
+            let boardId = this.state.boardId;
+            if (!boardId) {
+                // Ensure we have a board created
+                const myBoard = await this.orm.call("whiteboard.board", "get_my_board", []);
+                boardId = myBoard.id;
+                this.state.boardId = boardId;
+                this.state.boardName = myBoard.name;
+            }
 
-        await this.orm.call(
-            "whiteboard.board",
-            "save_my_board",
-            [this.state.boardId, data_json, thumbnail, this.state.boardName]
-        );
+            await this.orm.call(
+                "whiteboard.board",
+                "save_my_board",
+                [boardId, data_json, thumbnail, this.state.boardName]
+            );
 
-        this.notification.add("Whiteboard saved.", { type: "success" });
-    }
+            this.notification.add("Whiteboard saved.", { type: "success" });
+            // Refresh board list in case name changed
+            await this._loadBoardsList();
+        }
 
     // ---------- History helpers ----------
     _pushHistory(resetRedo = false) {

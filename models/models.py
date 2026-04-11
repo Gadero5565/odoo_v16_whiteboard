@@ -30,6 +30,31 @@ class WhiteboardBoard(models.Model):
         }
 
     @api.model
+    def get_user_boards(self):
+        """Return list of all boards belonging to the current user."""
+        boards = self.search([("user_id", "=", self.env.uid)], order="write_date desc")
+        return [
+            {
+                "id": b.id,
+                "name": b.name,
+                "write_date": b.write_date,
+            }
+            for b in boards
+        ]
+
+    @api.model
+    def get_board_data(self, board_id):
+        """Return data for a specific board if owned by current user."""
+        board = self.browse(board_id).exists()
+        if not board or board.user_id.id != self.env.uid:
+            return {"error": _("Board not found or access denied")}
+        return {
+            "id": board.id,
+            "name": board.name,
+            "data_json": board.data_json or False,
+        }
+
+    @api.model
     def save_my_board(self, board_id, data_json, thumbnail_data_url=None, name=None):
         """Save current user's board safely."""
         board = self.browse(board_id).exists()
@@ -51,3 +76,13 @@ class WhiteboardBoard(models.Model):
 
         board.write(vals)
         return True
+
+    def action_open_whiteboard(self):
+        """Open this board in the whiteboard client action."""
+        return {
+            "type": "ir.actions.client",
+            "tag": "odoo_whiteboard.whiteboard_action",
+            "name": "Whiteboard",
+            "params": {"board_id": self.id},
+            "target": "current",
+        }

@@ -10,6 +10,20 @@
                             Whiteboard
                         </span>
 
+                         <div class="o_wb_field">
+                            <i class="fa fa-folder-open o_wb_field_icon"/>
+                            <select class="form-control form-control-sm o_whiteboard_select"
+                                    t-on-change="onSelectBoard"
+                                    t-att-value="state.boardId">
+                                <option value="">-- My default board --</option>
+                                <t t-foreach="state.boards" t-as="board" t-key="board.id">
+                                    <option t-att-value="board.id" t-att-selected="board.id === state.boardId">
+                                        <t t-esc="board.name"/>
+                                    </option>
+                                </t>
+                            </select>
+                        </div>
+
                         <div class="o_wb_field">
                             <i class="fa fa-tag o_wb_field_icon"/>
                             <input class="form-control form-control-sm o_whiteboard_name"
