@@ -41,7 +41,7 @@
         <field name="name">Saved Board Record</field>
         <field name="res_model">whiteboard.board</field>
         <field name="view_mode">tree,form</field>
-        <field name="domain">[('user_id', '=', uid)]</field>
+        <field name="domain">[('user_id', '=', uid), ('active', '=', True)]</field>
         <field name="context">{'default_user_id': uid}</field>
     </record>
 </odoo>
