@@ -13,6 +13,11 @@ import {
     createWhiteboardFlowNode,
 } from "./whiteboard_objects";
 
+import {
+    WHITEBOARD_TEMPLATES,
+    buildWhiteboardTemplate,
+} from "./whiteboard_templates";
+
 export class WhiteboardAction extends Component {
     setup() {
         this.orm = useService("orm");
@@ -40,6 +45,7 @@ export class WhiteboardAction extends Component {
             mode: "pen",
             connectorFromNodeId: null,
 
+            templates: WHITEBOARD_TEMPLATES,
             boards: [],
         });
 
@@ -277,6 +283,77 @@ export class WhiteboardAction extends Component {
         window.setTimeout(() => {
             this._resizeCanvas();
         }, 260);
+    }
+
+    /* -------------------------------------------------------------------------
+     * Templates
+     * ------------------------------------------------------------------------- */
+
+    insertTemplate(templateCode) {
+        const fabric = window.fabric;
+
+        if (!fabric || !this.canvas) {
+            return;
+        }
+
+        this.setSelect();
+
+        const point = this._getInsertPoint();
+
+        const result = buildWhiteboardTemplate(fabric, templateCode, {
+            centerX: point.x,
+            centerY: point.y,
+            color: this.state.color,
+        });
+
+        if (!result || !result.objects?.length) {
+            this.notification.add("Template could not be inserted.", {
+                type: "warning",
+            });
+            return;
+        }
+
+        this._runWithoutHistory(() => {
+            for (const object of result.objects) {
+                this.canvas.add(object);
+            }
+
+            for (const connector of result.connectors || []) {
+                this.canvas.sendToBack(connector);
+            }
+        });
+
+        if (result.activeObject) {
+            this.canvas.setActiveObject(result.activeObject);
+        }
+
+        this._updateAllConnectors();
+        this.canvas.requestRenderAll();
+
+        this._pushHistory();
+
+        const template = this.state.templates.find((item) => item.code === templateCode);
+        const templateName = template?.name || "Template";
+
+        this.notification.add(`${templateName} template inserted.`, {
+            type: "success",
+        });
+    }
+
+    insertMindMapTemplate() {
+        this.insertTemplate("mind_map");
+    }
+
+    insertProjectPlanTemplate() {
+        this.insertTemplate("project_plan");
+    }
+
+    insertBasicFlowchartTemplate() {
+        this.insertTemplate("basic_flowchart");
+    }
+
+    insertProjectWorkflowTemplate() {
+        this.insertTemplate("project_workflow");
     }
 
     // -------------------------------------------------------------------------

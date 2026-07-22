@@ -17,6 +17,7 @@
             "odoo_v16_whiteboard/static/src/whiteboard_action/whiteboard_action.scss",
             "odoo_v16_whiteboard/static/src/whiteboard_action/whiteboard_action.xml",
             "odoo_v16_whiteboard/static/src/whiteboard_action/whiteboard_objects.js",
+            "odoo_v16_whiteboard/static/src/whiteboard_action/whiteboard_templates.js",
             "odoo_v16_whiteboard/static/src/whiteboard_action/whiteboard_action.js",
         ],
     },

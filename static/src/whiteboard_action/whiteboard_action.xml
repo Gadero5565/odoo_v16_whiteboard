@@ -94,6 +94,47 @@
                             </div>
                         </section>
 
+                        <!-- Templates -->
+                        <section class="o_wb_panel_section">
+                            <div class="o_wb_section_header">
+                                <span class="o_wb_section_title">Templates</span>
+                            </div>
+
+                            <div class="o_wb_button_grid o_wb_button_grid_two">
+                                <button type="button"
+                                        class="o_wb_button o_wb_button_tool"
+                                        t-on-click="insertMindMapTemplate"
+                                        t-att-title="'Insert simple mind map template'">
+                                    <i class="fa fa-sitemap"/>
+                                    <span>Mind Map</span>
+                                </button>
+
+                                <button type="button"
+                                        class="o_wb_button o_wb_button_tool"
+                                        t-on-click="insertProjectPlanTemplate"
+                                        t-att-title="'Insert project plan template'">
+                                    <i class="fa fa-tasks"/>
+                                    <span>Project</span>
+                                </button>
+
+                                <button type="button"
+                                        class="o_wb_button o_wb_button_tool"
+                                        t-on-click="insertBasicFlowchartTemplate"
+                                        t-att-title="'Insert basic flowchart template'">
+                                    <i class="fa fa-share-alt"/>
+                                    <span>Flowchart</span>
+                                </button>
+
+                                <button type="button"
+                                        class="o_wb_button o_wb_button_tool"
+                                        t-on-click="insertProjectWorkflowTemplate"
+                                        t-att-title="'Insert project workflow template'">
+                                    <i class="fa fa-random"/>
+                                    <span>Workflow</span>
+                                </button>
+                            </div>
+                        </section>
+
                         <!-- Tools -->
                         <section class="o_wb_panel_section">
                             <div class="o_wb_section_header">
