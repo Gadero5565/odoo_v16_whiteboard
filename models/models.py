@@ -99,6 +99,13 @@ class WhiteboardBoard(models.Model):
 
     active = fields.Boolean(default=True)
 
+    revision = fields.Integer(
+        default=0,
+        required=True,
+        readonly=True,
+        copy=False,
+    )
+
     data_json = fields.Text()
 
     thumbnail = fields.Binary(
@@ -123,7 +130,11 @@ class WhiteboardBoard(models.Model):
 
         for vals in vals_list:
             vals = dict(vals)
+
+            # Ownership and concurrency metadata are always controlled
+            # by the server, never by RPC or imported values.
             vals["user_id"] = self.env.uid
+            vals["revision"] = 0
             vals.setdefault("company_id", self.env.company.id)
 
             if "data_json" in vals:
@@ -142,23 +153,31 @@ class WhiteboardBoard(models.Model):
 
     def write(self, vals):
         """
-        Prevent ownership reassignment and validate direct ORM writes.
+        Prevent ownership and revision reassignment, validate direct ORM
+        writes, and increment the board revision whenever saved content
+        changes.
 
         Archived boards may be reactivated or deleted, but their saved
         content cannot be changed while they remain archived.
         """
         vals = dict(vals)
-        vals.pop("user_id", None)
 
-        saved_content_fields = {"name", "data_json", "thumbnail"}
-        if saved_content_fields.intersection(vals):
+        # These fields are always server-controlled.
+        vals.pop("user_id", None)
+        vals.pop("revision", None)
+
+        saved_content_fields = {
+            "name",
+            "data_json",
+            "thumbnail",
+        }
+        changes_saved_content = bool(
+            saved_content_fields.intersection(vals)
+        )
+
+        if changes_saved_content:
             self.check_access_rights("write")
             self.check_access_rule("write")
-
-            if any(not board.active for board in self):
-                raise ValidationError(
-                    _("Archived whiteboards cannot be modified.")
-                )
 
         if "data_json" in vals:
             vals["data_json"] = self._validated_data_json(
@@ -170,7 +189,48 @@ class WhiteboardBoard(models.Model):
                 vals["thumbnail"]
             )
 
-        return self._write_validated_vals(vals)
+        if not changes_saved_content:
+            return self._write_validated_vals(vals)
+
+        for board in self:
+            # ORM updates can be deferred. Flush the fields used by the
+            # raw SQL query before reading and locking the database row.
+            board.flush_recordset([
+                "revision",
+                "active",
+            ])
+
+            self.env.cr.execute(
+                """
+                    SELECT revision, active
+                      FROM whiteboard_board
+                     WHERE id = %s
+                     FOR UPDATE
+                """,
+                [board.id],
+            )
+            row = self.env.cr.fetchone()
+
+            if not row:
+                raise ValidationError(
+                    _("Whiteboard no longer exists.")
+                )
+
+            current_revision, is_active = row
+
+            if not is_active:
+                raise ValidationError(
+                    _("Archived whiteboards cannot be modified.")
+                )
+
+            board_vals = dict(vals)
+            board_vals["revision"] = (
+                                             current_revision or 0
+                                     ) + 1
+
+            board._write_validated_vals(board_vals)
+
+        return True
 
     def _write_validated_vals(self, vals):
         return super().write(vals)
@@ -225,12 +285,38 @@ class WhiteboardBoard(models.Model):
 
     def _board_payload(self, board):
         board.ensure_one()
+
         return {
             "id": board.id,
             "name": board.name,
             "data_json": board.data_json or False,
-            "write_date": fields.Datetime.to_string(board.write_date) if board.write_date else False,
+            "revision": board.revision,
+            "write_date": (
+                fields.Datetime.to_string(board.write_date)
+                if board.write_date
+                else False
+            ),
         }
+
+    @api.model
+    def _validate_expected_revision(self, expected_revision):
+        """
+        Validate the revision supplied by the client.
+
+        Boolean values must be rejected explicitly because bool is a
+        subclass of int in Python.
+        """
+        if (
+                isinstance(expected_revision, bool)
+                or not isinstance(expected_revision, int)
+                or expected_revision < 0
+        ):
+            return (
+                False,
+                _("Whiteboard revision is missing or invalid."),
+            )
+
+        return True, expected_revision
 
     def _validated_data_json(self, data_json):
         valid, result = self._validate_data_json(data_json)
@@ -722,40 +808,130 @@ class WhiteboardBoard(models.Model):
         return self._board_payload(board)
 
     @api.model
-    def save_my_board(self, board_id, data_json, thumbnail_data_url=None, name=None):
+    def save_my_board(
+            self,
+            board_id,
+            data_json,
+            thumbnail_data_url=None,
+            name=None,
+            expected_revision=None,
+    ):
         """
-        Save a board owned by the current user.
+        Save a board owned by the current user using optimistic
+        concurrency protection.
 
-        Important:
-        - invalid board_id does not fallback to another board
-        - user cannot write another user's board
-        - JSON is validated server-side
-        - thumbnail is validated server-side
+        The save is rejected when the client revision is older than the
+        revision currently stored in the database.
         """
         board = self._get_current_user_board(board_id)
 
         if not board:
-            return {"error": _("Board not found or access denied.")}
+            return {
+                "error": _(
+                    "Board not found or access denied."
+                ),
+            }
 
-        json_ok, json_result = self._validate_data_json(data_json)
+        revision_ok, revision_result = (
+            self._validate_expected_revision(
+                expected_revision
+            )
+        )
+
+        if not revision_ok:
+            return {
+                "error": revision_result,
+            }
+
+        json_ok, json_result = self._validate_data_json(
+            data_json
+        )
+
         if not json_ok:
-            return {"error": json_result}
+            return {
+                "error": json_result,
+            }
 
-        thumb_ok, thumb_result = self._extract_thumbnail_base64(thumbnail_data_url)
+        thumb_ok, thumb_result = (
+            self._extract_thumbnail_base64(
+                thumbnail_data_url
+            )
+        )
+
         if not thumb_ok:
-            return {"error": thumb_result}
+            return {
+                "error": thumb_result,
+            }
+
+        # ORM writes can be delayed until a flush. Make sure the
+        # concurrency fields are current in PostgreSQL before locking
+        # and reading the row.
+        board.flush_recordset([
+            "revision",
+            "active",
+            "user_id",
+        ])
+
+        # Lock the database row so two concurrent saves cannot both
+        # validate the same revision and then overwrite one another.
+        self.env.cr.execute(
+            """
+                SELECT revision, active, user_id
+                  FROM whiteboard_board
+                 WHERE id = %s
+                 FOR UPDATE
+            """,
+            [board.id],
+        )
+        row = self.env.cr.fetchone()
+
+        if not row:
+            return {
+                "error": _(
+                    "Board not found or access denied."
+                ),
+            }
+
+        current_revision, is_active, owner_id = row
+        current_revision = current_revision or 0
+
+        # Recheck security-sensitive values after acquiring the lock.
+        if (
+                not is_active
+                or owner_id != self.env.uid
+        ):
+            return {
+                "error": _(
+                    "Board not found or access denied."
+                ),
+            }
+
+        if revision_result != current_revision:
+            return {
+                "error": _(
+                    "This whiteboard was changed in another tab or "
+                    "session. Reload it before saving to avoid "
+                    "overwriting newer changes."
+                ),
+                "conflict": True,
+                "current_revision": current_revision,
+            }
 
         vals = {
             "data_json": json_result,
+            "revision": current_revision + 1,
         }
 
         clean_name = (name or "").strip()
+
         if clean_name:
             vals["name"] = clean_name
 
         if thumb_result:
             vals["thumbnail"] = thumb_result
 
+        # Use the validated internal write method so revision is increased
+        # exactly once.
         board._write_validated_vals(vals)
 
         return {

@@ -36,6 +36,7 @@ export class WhiteboardAction extends Component {
             saving: false,
             boardId: this.initialBoardId,
             boardName: "My Whiteboard",
+            boardRevision: null,
             dirty: false,
 
             sidebarOpen: false,
@@ -1259,81 +1260,121 @@ export class WhiteboardAction extends Component {
     }
 
     async _applyBoardPayload(payload) {
-        if (!payload) return false;
+    if (!payload) return false;
 
-        this.state.boardId = payload.id;
-        this.state.boardName = payload.name || "Untitled Board";
+    this.state.boardId = payload.id;
+    this.state.boardName = payload.name || "Untitled Board";
+    this.state.boardRevision = Number.isInteger(payload.revision)
+        ? payload.revision
+        : 0;
 
-        let applied = true;
+    let applied = true;
 
-        if (payload.data_json) {
-            applied = await this._applyJSON(payload.data_json);
-        } else {
-            this._runWithoutHistory(() => {
-                this._clearCanvasObjects();
-            });
-        }
-
-        if (!applied) return false;
-
+    if (payload.data_json) {
+        applied = await this._applyJSON(payload.data_json);
+    } else {
         this._runWithoutHistory(() => {
-            this._updateAllConnectors();
+            this._clearCanvasObjects();
         });
-
-        this._resetHistoryFromCanvas();
-        this.state.dirty = false;
-
-        this._resizeCanvas();
-
-        return true;
     }
+
+    if (!applied) return false;
+
+    this._runWithoutHistory(() => {
+        this._updateAllConnectors();
+    });
+
+    this._resetHistoryFromCanvas();
+    this.state.dirty = false;
+
+    this._resizeCanvas();
+
+    return true;
+}
 
     async save() {
-        if (!this.canvas || !this.state.boardId || this.state.saving) return;
+    if (
+        !this.canvas
+        || !this.state.boardId
+        || this.state.saving
+    ) {
+        return;
+    }
 
-        this._flushDebouncedHistory();
+    this._flushDebouncedHistory();
 
-        this.state.saving = true;
+    this.state.saving = true;
 
-        try {
-            const dataJson = this._getCanvasJSON();
-            const thumbnail = this.canvas.toDataURL({
-                format: "png",
-                multiplier: 0.2,
+    try {
+        const dataJson = this._getCanvasJSON();
+
+        const thumbnail = this.canvas.toDataURL({
+            format: "png",
+            multiplier: 0.2,
+        });
+
+        const result = await this.orm.call(
+            "whiteboard.board",
+            "save_my_board",
+            [
+                this.state.boardId,
+                dataJson,
+                thumbnail,
+                this.state.boardName,
+                this.state.boardRevision,
+            ]
+        );
+
+        if (result?.error) {
+            this.notification.add(result.error, {
+                type: result.conflict
+                    ? "warning"
+                    : "danger",
             });
 
-            const result = await this.orm.call(
-                "whiteboard.board",
-                "save_my_board",
-                [
-                    this.state.boardId,
-                    dataJson,
-                    thumbnail,
-                    this.state.boardName,
-                ]
-            );
-
-            if (result?.error) {
-                this.notification.add(result.error, { type: "danger" });
-                return;
-            }
-
-            if (result?.board) {
-                this.state.boardId = result.board.id;
-                this.state.boardName = result.board.name || this.state.boardName;
-            }
-
-            this.state.dirty = false;
-
-            await this._loadBoardsList();
-
-            this.notification.add("Whiteboard saved.", { type: "success" });
-        } catch {
-            this.notification.add("Could not save whiteboard.", { type: "danger" });
-        } finally {
-            this.state.saving = false;
+            // Keep dirty=true. The user must reload or resolve the
+            // conflict instead of silently overwriting newer data.
+            return;
         }
+
+        if (result?.board) {
+            this.state.boardId = result.board.id;
+            this.state.boardName =
+                result.board.name
+                || this.state.boardName;
+
+            if (
+                Number.isInteger(
+                    result.board.revision
+                )
+            ) {
+                this.state.boardRevision =
+                    result.board.revision;
+            }
+        }
+
+        this.state.dirty = false;
+
+        await this._loadBoardsList();
+
+        this.notification.add(
+            "Whiteboard saved.",
+            {
+                type: "success",
+            }
+        );
+    } catch {
+        // Dirty state remains true when the request fails.
+        this.notification.add(
+            "Could not save whiteboard.",
+            {
+                type: "danger",
+            }
+        );
+    } finally {
+        this.state.saving = false;
     }
+}
 
     // -------------------------------------------------------------------------
     // History helpers

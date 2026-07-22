@@ -150,6 +150,7 @@ class TestWhiteboardAccessControl(TransactionCase):
             '{"objects":[{"type":"rect","fill":"white"}]}',
             None,
             "Attacker rename",
+            board_b.revision,
         )
 
         self.assertIn("error", result)
@@ -173,6 +174,9 @@ class TestWhiteboardAccessControl(TransactionCase):
                 result = self.BoardA.save_my_board(
                     invalid_id,
                     '{"objects":[]}',
+                    None,
+                    None,
+                    0,
                 )
 
                 self.assertIn("error", result)
@@ -191,6 +195,7 @@ class TestWhiteboardAccessControl(TransactionCase):
             '{"objects":[{"type":"rect","fill":"white"}]}',
             None,
             "Archived rename",
+            board_a.revision,
         )
 
         self.assertIn("error", result)
@@ -262,6 +267,7 @@ class TestWhiteboardAccessControl(TransactionCase):
             '{"objects":[]}',
             None,
             "Owner update",
+            board_a.revision,
         )
 
         self.assertTrue(save_result["ok"])
