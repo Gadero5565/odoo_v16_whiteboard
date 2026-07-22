@@ -413,3 +413,4 @@ export function buildWhiteboardTemplate(fabric, templateCode, options = {}) {
             return null;
     }
 }
+

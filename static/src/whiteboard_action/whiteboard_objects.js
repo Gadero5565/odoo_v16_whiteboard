@@ -544,3 +544,4 @@ export function createWhiteboardShape(fabric, shape, options = {}) {
             return null;
     }
 }
+

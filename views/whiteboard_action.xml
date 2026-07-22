@@ -11,3 +11,4 @@
     <menuitem id="menu_whiteboard_saved" name="Saved Board Record" parent="menu_whiteboard_root"
               action="action_whiteboard_board" sequence="20"/>
 </odoo>
+

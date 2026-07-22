@@ -19,3 +19,4 @@
 #         return http.request.render('odoo_whiteboard.object', {
 #             'object': obj
 #         })
+

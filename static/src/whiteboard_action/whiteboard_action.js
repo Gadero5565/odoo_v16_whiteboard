@@ -423,26 +423,42 @@ export class WhiteboardAction extends Component {
     }
 
     addText() {
-        const fabric = window.fabric;
-        if (!fabric || !this.canvas) return;
+    const fabric = window.fabric;
+    if (!fabric || !this.canvas) return;
 
-        this.state.mode = "select";
-        this.canvas.isDrawingMode = false;
-        this.canvas.selection = true;
+    this.state.mode = "text";
+    this.state.connectorFromNodeId = null;
 
-        const text = new fabric.IText("Type here", {
-            left: 80,
-            top: 80,
-            fontSize: 28,
-            fill: this.state.color,
-        });
+    this.canvas.isDrawingMode = false;
+    this.canvas.selection = true;
+    this.canvas.defaultCursor = "text";
 
-        this.canvas.add(text);
-        this.canvas.setActiveObject(text);
-        this.canvas.requestRenderAll();
+    const point = this._getInsertPoint();
 
-        this._pushHistory();
-    }
+    const text = new fabric.IText("Type here", {
+        left: point.x,
+        top: point.y,
+        originX: "center",
+        originY: "center",
+        fontSize: 28,
+        fill: this.state.color,
+    });
+
+    text.on("editing:exited", () => {
+        if (this.state.mode === "text") {
+            this.setSelect();
+        }
+    });
+
+    this.canvas.add(text);
+    this.canvas.setActiveObject(text);
+    this.canvas.requestRenderAll();
+
+    text.enterEditing();
+    text.selectAll();
+
+    this._pushHistory();
+}
 
     clearCanvas() {
         if (!this.canvas) return;
@@ -1443,3 +1459,4 @@ export class WhiteboardAction extends Component {
 WhiteboardAction.template = "odoo_whiteboard.WhiteboardAction";
 
 registry.category("actions").add("odoo_whiteboard.whiteboard_action", WhiteboardAction);
+

@@ -167,7 +167,7 @@
                                 </button>
 
                                 <button type="button"
-                                        class="o_wb_button o_wb_button_tool"
+                                        t-attf-class="o_wb_button o_wb_button_tool #{state.mode === 'text' ? 'is-active' : ''}"
                                         t-on-click="addText"
                                         t-att-title="'Add text'">
                                     <i class="fa fa-font"/>
@@ -453,3 +453,4 @@
         </div>
     </t>
 </templates>
+

@@ -7,3 +7,4 @@
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
     </record>
 </odoo>
+

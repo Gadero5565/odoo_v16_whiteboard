@@ -45,3 +45,4 @@
         <field name="context">{'default_user_id': uid}</field>
     </record>
 </odoo>
+
