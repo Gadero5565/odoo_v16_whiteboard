@@ -1,15 +1,25 @@
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
+from PIL import Image, UnidentifiedImageError
 import base64
+from io import BytesIO
 import json
 import math
 import re
+import warnings
 
 
-MAX_JSON_BYTES = 10 * 1024 * 1024       # 10 MB
-MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024   # 2 MB
+MAX_JSON_BYTES = 2 * 1024 * 1024             # 2 MB
+MAX_THUMBNAIL_BYTES = 512 * 1024             # 512 KB
+MAX_THUMBNAIL_ENCODED_CHARS = 750_000
+MAX_THUMBNAIL_WIDTH = 2048
+MAX_THUMBNAIL_HEIGHT = 2048
+MAX_THUMBNAIL_PIXELS = 2_000_000
 
-# Phase 1A payload limits. Storage quotas and lower byte limits belong to Phase 1B.
+MAX_BOARDS_PER_USER = 100
+MAX_BOARD_LIST_RESULTS = 100
+
+# Phase 1A payload complexity limits.
 MAX_CANVAS_OBJECTS = 1000
 MAX_GROUP_DEPTH = 3
 MAX_JSON_DEPTH = 12
@@ -50,6 +60,15 @@ WHITEBOARD_ENUMS = {
     "wbConnectorType": frozenset({
         "straight_arrow", "template_arrow", "mind_arrow",
     }),
+}
+
+ALLOWED_THUMBNAIL_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
+
+THUMBNAIL_MIME_FORMATS = {
+    "png": "PNG",
+    "jpg": "JPEG",
+    "jpeg": "JPEG",
+    "webp": "WEBP",
 }
 
 
@@ -99,6 +118,7 @@ class WhiteboardBoard(models.Model):
         Do not trust user_id coming from the client, XML context, RPC, import, etc.
         Each user creates boards only for himself.
         """
+        self._check_board_creation_quota(len(vals_list))
         prepared_vals_list = []
 
         for vals in vals_list:
@@ -107,7 +127,14 @@ class WhiteboardBoard(models.Model):
             vals.setdefault("company_id", self.env.company.id)
 
             if "data_json" in vals:
-                vals["data_json"] = self._validated_data_json(vals["data_json"])
+                vals["data_json"] = self._validated_data_json(
+                    vals["data_json"]
+                )
+
+            if "thumbnail" in vals:
+                vals["thumbnail"] = self._validated_thumbnail(
+                    vals["thumbnail"]
+                )
 
             prepared_vals_list.append(vals)
 
@@ -116,12 +143,32 @@ class WhiteboardBoard(models.Model):
     def write(self, vals):
         """
         Prevent ownership reassignment and validate direct ORM writes.
+
+        Archived boards may be reactivated or deleted, but their saved
+        content cannot be changed while they remain archived.
         """
         vals = dict(vals)
         vals.pop("user_id", None)
 
+        saved_content_fields = {"name", "data_json", "thumbnail"}
+        if saved_content_fields.intersection(vals):
+            self.check_access_rights("write")
+            self.check_access_rule("write")
+
+            if any(not board.active for board in self):
+                raise ValidationError(
+                    _("Archived whiteboards cannot be modified.")
+                )
+
         if "data_json" in vals:
-            vals["data_json"] = self._validated_data_json(vals["data_json"])
+            vals["data_json"] = self._validated_data_json(
+                vals["data_json"]
+            )
+
+        if "thumbnail" in vals:
+            vals["thumbnail"] = self._validated_thumbnail(
+                vals["thumbnail"]
+            )
 
         return self._write_validated_vals(vals)
 
@@ -131,6 +178,35 @@ class WhiteboardBoard(models.Model):
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
+
+    @api.model
+    def _check_board_creation_quota(self, requested_count):
+        if not requested_count:
+            return
+
+        # Serialize creation for the current user so concurrent requests
+        # cannot bypass the per-user quota.
+        self.env.cr.execute(
+            "SELECT id FROM res_users WHERE id = %s FOR UPDATE",
+            [self.env.uid],
+        )
+
+        existing_count = (
+            self.sudo()
+            .with_context(active_test=False)
+            .search_count([
+                ("user_id", "=", self.env.uid),
+            ])
+        )
+
+        if existing_count + requested_count > MAX_BOARDS_PER_USER:
+            raise ValidationError(
+                _(
+                    "You can create up to %s whiteboards. "
+                    "Delete an existing board before creating another."
+                )
+                % MAX_BOARDS_PER_USER
+            )
 
     def _get_current_user_board(self, board_id):
         try:
@@ -445,30 +521,118 @@ class WhiteboardBoard(models.Model):
             or "://" in normalized
         )
 
-    def _extract_thumbnail_base64(self, thumbnail_data_url):
-        if not thumbnail_data_url:
-            return True, False
-
-        if not isinstance(thumbnail_data_url, str):
-            return False, _("Thumbnail data is invalid.")
-
-        match = re.match(
-            r"^data:image/(png|jpg|jpeg|webp);base64,([A-Za-z0-9+/=\s]+)$",
-            thumbnail_data_url,
+    def _validated_thumbnail(self, thumbnail_value):
+        valid, result = self._extract_thumbnail_base64(
+            thumbnail_value
         )
 
-        if not match:
-            return False, _("Thumbnail must be a valid base64 image data URL.")
+        if not valid:
+            raise ValidationError(result)
 
-        thumbnail_b64 = re.sub(r"\s+", "", match.group(2))
+        return result
+
+    def _extract_thumbnail_base64(self, thumbnail_value):
+        if not thumbnail_value:
+            return True, False
+
+        if isinstance(thumbnail_value, bytes):
+            try:
+                thumbnail_value = thumbnail_value.decode("ascii")
+            except UnicodeDecodeError:
+                return False, _("Thumbnail data is invalid.")
+
+        if not isinstance(thumbnail_value, str):
+            return False, _("Thumbnail data is invalid.")
+
+        if len(thumbnail_value) > MAX_THUMBNAIL_ENCODED_CHARS:
+            return False, _("Thumbnail is too large.")
+
+        declared_format = None
+
+        data_url_match = re.fullmatch(
+            (
+                r"data:image/(png|jpg|jpeg|webp);"
+                r"base64,([A-Za-z0-9+/=\s]+)"
+            ),
+            thumbnail_value,
+            flags=re.IGNORECASE,
+        )
+
+        if data_url_match:
+            declared_format = THUMBNAIL_MIME_FORMATS[
+                data_url_match.group(1).lower()
+            ]
+            thumbnail_b64 = data_url_match.group(2)
+        else:
+            if thumbnail_value.lstrip().lower().startswith("data:"):
+                return False, _(
+                    "Thumbnail must be a supported base64 image."
+                )
+
+            thumbnail_b64 = thumbnail_value
+
+        thumbnail_b64 = re.sub(r"\s+", "", thumbnail_b64)
+
+        if not thumbnail_b64:
+            return False, _("Thumbnail data is invalid.")
 
         try:
-            decoded = base64.b64decode(thumbnail_b64, validate=True)
-        except Exception:
+            decoded = base64.b64decode(
+                thumbnail_b64,
+                validate=True,
+            )
+        except (TypeError, ValueError):
             return False, _("Thumbnail base64 data is invalid.")
 
         if len(decoded) > MAX_THUMBNAIL_BYTES:
             return False, _("Thumbnail is too large.")
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter(
+                    "error",
+                    Image.DecompressionBombWarning,
+                )
+
+                with Image.open(BytesIO(decoded)) as image:
+                    image_format = image.format
+                    width, height = image.size
+                    frame_count = getattr(image, "n_frames", 1)
+
+                    image.verify()
+
+        except (
+                Image.DecompressionBombError,
+                Image.DecompressionBombWarning,
+                UnidentifiedImageError,
+                OSError,
+                ValueError,
+        ):
+            return False, _("Thumbnail is not a valid image.")
+
+        if image_format not in ALLOWED_THUMBNAIL_FORMATS:
+            return False, _(
+                "Thumbnail image format is not supported."
+            )
+
+        if declared_format and image_format != declared_format:
+            return False, _(
+                "Thumbnail image type does not match its data URL."
+            )
+
+        if frame_count != 1:
+            return False, _(
+                "Animated thumbnails are not supported."
+            )
+
+        if (
+                width <= 0
+                or height <= 0
+                or width > MAX_THUMBNAIL_WIDTH
+                or height > MAX_THUMBNAIL_HEIGHT
+                or width * height > MAX_THUMBNAIL_PIXELS
+        ):
+            return False, _("Thumbnail dimensions are too large.")
 
         return True, thumbnail_b64
 
@@ -479,7 +643,7 @@ class WhiteboardBoard(models.Model):
     @api.model
     def get_user_boards(self):
         """
-        Return all active boards belonging to the current user.
+        Return the newest active boards belonging to the current user.
         """
         boards = self.search(
             [
@@ -487,13 +651,18 @@ class WhiteboardBoard(models.Model):
                 ("active", "=", True),
             ],
             order="write_date desc, id desc",
+            limit=MAX_BOARD_LIST_RESULTS,
         )
 
         return [
             {
                 "id": board.id,
                 "name": board.name,
-                "write_date": fields.Datetime.to_string(board.write_date) if board.write_date else False,
+                "write_date": (
+                    fields.Datetime.to_string(board.write_date)
+                    if board.write_date
+                    else False
+                ),
             }
             for board in boards
         ]
@@ -599,6 +768,8 @@ class WhiteboardBoard(models.Model):
         Open this board in the whiteboard client action.
         """
         self.ensure_one()
+        self.check_access_rights("read")
+        self.check_access_rule("read")
 
         return {
             "type": "ir.actions.client",

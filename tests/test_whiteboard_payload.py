@@ -1,12 +1,20 @@
+import base64
+from io import BytesIO
 import json
+from unittest.mock import patch
 
+from PIL import Image
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
+from ..models import models as whiteboard_models
 from ..models.models import (
     MAX_CANVAS_OBJECTS,
+    MAX_JSON_BYTES,
     MAX_PATH_COMMANDS,
     MAX_TEXT_LENGTH,
+    MAX_THUMBNAIL_BYTES,
+    MAX_THUMBNAIL_WIDTH,
 )
 
 
@@ -18,6 +26,22 @@ class TestWhiteboardPayloadValidation(TransactionCase):
 
     def _validate(self, payload):
         return self.Board._validate_data_json(json.dumps(payload))
+
+    def _png_base64(self, width=32, height=32):
+        buffer = BytesIO()
+
+        Image.new(
+            "RGB",
+            (width, height),
+            color="white",
+        ).save(
+            buffer,
+            format="PNG",
+        )
+
+        return base64.b64encode(
+            buffer.getvalue()
+        ).decode("ascii")
 
     def _valid_payload(self):
         return {
@@ -334,3 +358,185 @@ class TestWhiteboardPayloadValidation(TransactionCase):
         valid, _error = self._validate(payload)
 
         self.assertFalse(valid)
+
+    def test_json_byte_limit_is_enforced(self):
+        valid, _error = self.Board._validate_data_json(
+            " " * (MAX_JSON_BYTES + 1)
+        )
+
+        self.assertFalse(valid)
+
+    def test_board_creation_quota_is_enforced(self):
+        existing_count = (
+            self.Board.sudo()
+            .with_context(active_test=False)
+            .search_count([
+                ("user_id", "=", self.env.uid),
+            ])
+        )
+
+        with patch.object(
+                whiteboard_models,
+                "MAX_BOARDS_PER_USER",
+                existing_count + 2,
+        ):
+            self.Board.create({"name": "Quota 1"})
+            self.Board.create({"name": "Quota 2"})
+
+            with self.assertRaises(ValidationError):
+                self.Board.create({"name": "Quota 3"})
+
+    def test_board_creation_quota_counts_archived_boards(self):
+        existing_count = (
+            self.Board.sudo()
+            .with_context(active_test=False)
+            .search_count([
+                ("user_id", "=", self.env.uid),
+            ])
+        )
+
+        with patch.object(
+                whiteboard_models,
+                "MAX_BOARDS_PER_USER",
+                existing_count + 1,
+        ):
+            board = self.Board.create({
+                "name": "Archived quota board",
+            })
+
+            board.write({"active": False})
+
+            with self.assertRaises(ValidationError):
+                self.Board.create({
+                    "name": "Quota bypass attempt",
+                })
+
+    def test_multi_create_cannot_bypass_board_quota(self):
+        existing_count = (
+            self.Board.sudo()
+            .with_context(active_test=False)
+            .search_count([
+                ("user_id", "=", self.env.uid),
+            ])
+        )
+
+        with patch.object(
+                whiteboard_models,
+                "MAX_BOARDS_PER_USER",
+                existing_count + 1,
+        ):
+            with self.assertRaises(ValidationError):
+                self.Board.create([
+                    {"name": "Batch 1"},
+                    {"name": "Batch 2"},
+                ])
+
+    def test_board_list_result_limit_is_enforced(self):
+        first = self.Board.create({
+            "name": "List limit 1",
+        })
+        second = self.Board.create({
+            "name": "List limit 2",
+        })
+        third = self.Board.create({
+            "name": "List limit 3",
+        })
+
+        with patch.object(
+                whiteboard_models,
+                "MAX_BOARD_LIST_RESULTS",
+                2,
+        ):
+            boards = self.Board.get_user_boards()
+
+        board_ids = [
+            board["id"]
+            for board in boards
+        ]
+
+        self.assertEqual(
+            board_ids,
+            [third.id, second.id],
+        )
+        self.assertNotIn(first.id, board_ids)
+
+    def test_valid_thumbnail_data_url_is_accepted(self):
+        thumbnail_b64 = self._png_base64()
+
+        valid, normalized = (
+            self.Board._extract_thumbnail_base64(
+                "data:image/png;base64,%s"
+                % thumbnail_b64
+            )
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual(
+            normalized,
+            thumbnail_b64,
+        )
+
+    def test_thumbnail_must_be_a_real_image(self):
+        fake_image = base64.b64encode(
+            b"not an image"
+        ).decode("ascii")
+
+        valid, _error = (
+            self.Board._extract_thumbnail_base64(
+                fake_image
+            )
+        )
+
+        self.assertFalse(valid)
+
+    def test_thumbnail_byte_limit_is_enforced(self):
+        oversized = base64.b64encode(
+            b"x" * (MAX_THUMBNAIL_BYTES + 1)
+        ).decode("ascii")
+
+        valid, _error = (
+            self.Board._extract_thumbnail_base64(
+                oversized
+            )
+        )
+
+        self.assertFalse(valid)
+
+    def test_thumbnail_dimension_limit_is_enforced(self):
+        oversized_dimensions = self._png_base64(
+            width=MAX_THUMBNAIL_WIDTH + 1,
+            height=1,
+        )
+
+        valid, _error = (
+            self.Board._extract_thumbnail_base64(
+                oversized_dimensions
+            )
+        )
+
+        self.assertFalse(valid)
+
+    def test_direct_create_cannot_bypass_thumbnail_validation(self):
+        fake_image = base64.b64encode(
+            b"not an image"
+        ).decode("ascii")
+
+        with self.assertRaises(ValidationError):
+            self.Board.create({
+                "name": "Invalid thumbnail",
+                "thumbnail": fake_image,
+            })
+
+    def test_direct_write_cannot_bypass_thumbnail_validation(self):
+        board = self.Board.create({
+            "name": "Thumbnail validation",
+        })
+
+        fake_image = base64.b64encode(
+            b"not an image"
+        ).decode("ascii")
+
+        with self.assertRaises(ValidationError):
+            board.write({
+                "thumbnail": fake_image,
+            })
