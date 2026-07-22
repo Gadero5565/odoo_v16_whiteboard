@@ -540,3 +540,39 @@ class TestWhiteboardPayloadValidation(TransactionCase):
             board.write({
                 "thumbnail": fake_image,
             })
+
+    def test_text_object_accepts_fabric_null_path_property(self):
+        payload = {
+            "objects": [
+                {
+                    "type": "textbox",
+                    "text": "Flowchart node",
+                    "path": None,
+                    "fill": "#0f172a",
+                    "fontSize": 16,
+                }
+            ],
+        }
+
+        valid, error = self._validate(payload)
+
+        self.assertTrue(valid, error)
+
+    def test_non_path_object_with_real_path_data_is_rejected(self):
+        payload = {
+            "objects": [
+                {
+                    "type": "textbox",
+                    "text": "Unsafe text path",
+                    "path": [
+                        ["M", 0, 0],
+                        ["L", 100, 100],
+                    ],
+                    "fill": "#0f172a",
+                }
+            ],
+        }
+
+        valid, _error = self._validate(payload)
+
+        self.assertFalse(valid)

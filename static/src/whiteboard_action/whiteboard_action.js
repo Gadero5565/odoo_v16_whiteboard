@@ -30,6 +30,9 @@ import {
 const AUTOSAVE_DEBOUNCE_MS = 1500;
 const AUTOSAVE_RETRY_MS = 10000;
 
+const HISTORY_MAX_ENTRIES = 50;
+const HISTORY_MAX_TOTAL_BYTES = 12 * 1024 * 1024;
+
 export class WhiteboardAction extends Component {
     setup() {
         this.orm = useService("orm");
@@ -103,6 +106,13 @@ export class WhiteboardAction extends Component {
 
         this.undoStack = [];
         this.redoStack = [];
+
+        this._historyEncoder = (
+            typeof TextEncoder !== "undefined"
+                ? new TextEncoder()
+                : null
+        );
+
         this._isApplyingHistory = false;
         this._historyTimer = null;
 
@@ -698,36 +708,56 @@ export class WhiteboardAction extends Component {
     }
 
     undo() {
-        if (!this.canvas || this.undoStack.length <= 1) return;
-
-        this._flushDebouncedHistory();
-
-        const current = this.undoStack.pop();
-        this.redoStack.push(current);
-
-        const previous = this.undoStack[this.undoStack.length - 1];
-
-        this._applyJSON(previous).then((ok) => {
-            if (ok) {
-                this._markCanvasDirty();
-            }
-        });
+    if (!this.canvas) {
+        return;
     }
+
+    /*
+     * Commit pending debounced text changes before deciding whether
+     * an undo state exists.
+     */
+    this._flushDebouncedHistory();
+
+    if (this.undoStack.length <= 1) {
+        return;
+    }
+
+    const current = this.undoStack.pop();
+    this.redoStack.push(current);
+
+    const previous = (
+        this.undoStack[
+            this.undoStack.length - 1
+        ]
+    );
+
+    this._applyJSON(previous.json).then((ok) => {
+        if (ok) {
+            this._markCanvasDirty();
+        }
+    });
+}
 
     redo() {
-        if (!this.canvas || !this.redoStack.length) return;
-
-        this._flushDebouncedHistory();
-
-        const next = this.redoStack.pop();
-        this.undoStack.push(next);
-
-        this._applyJSON(next).then((ok) => {
-            if (ok) {
-                this._markCanvasDirty();
-            }
-        });
+    if (!this.canvas) {
+        return;
     }
+
+    this._flushDebouncedHistory();
+
+    if (!this.redoStack.length) {
+        return;
+    }
+
+    const next = this.redoStack.pop();
+    this.undoStack.push(next);
+
+    this._applyJSON(next.json).then((ok) => {
+        if (ok) {
+            this._markCanvasDirty();
+        }
+    });
+}
 
     exportPNG() {
         if (!this.canvas) return;
@@ -1783,30 +1813,138 @@ export class WhiteboardAction extends Component {
     // History helpers
     // -------------------------------------------------------------------------
 
+    _getHistoryByteLength(json) {
+        /*
+         * Use the UTF-8 byte size so Arabic and other multibyte text are
+         * measured accurately.
+         */
+        if (this._historyEncoder) {
+            return this._historyEncoder.encode(
+                json
+            ).byteLength;
+        }
+
+        /*
+         * Fallback for an older browser environment without TextEncoder.
+         */
+        return new Blob([json]).size;
+    }
+
+    _createHistoryEntry(json) {
+        return {
+            json,
+            bytes: this._getHistoryByteLength(json),
+        };
+    }
+
+    _getHistoryTotalBytes() {
+        let totalBytes = 0;
+
+        for (const entry of this.undoStack) {
+            totalBytes += entry.bytes;
+        }
+
+        for (const entry of this.redoStack) {
+            totalBytes += entry.bytes;
+        }
+
+        return totalBytes;
+    }
+
+    _trimHistoryToBudget() {
+        let totalEntries = (
+            this.undoStack.length
+            + this.redoStack.length
+        );
+
+        let totalBytes = (
+            this._getHistoryTotalBytes()
+        );
+
+        /*
+         * Remove the oldest undo entries first while always preserving
+         * the current canvas snapshot.
+         */
+        while (
+            this.undoStack.length > 1
+            && (
+                totalEntries > HISTORY_MAX_ENTRIES
+                || totalBytes > HISTORY_MAX_TOTAL_BYTES
+            )
+        ) {
+            const removed = this.undoStack.shift();
+
+            totalEntries -= 1;
+            totalBytes -= removed.bytes;
+        }
+
+        /*
+         * Normally redo cannot exceed the budget independently because
+         * undo only moves existing entries between stacks. This fallback
+         * makes the invariant safe even if future code changes that
+         * behavior.
+         *
+         * redoStack.pop() is the next redo operation, so shift() removes
+         * the farthest future state first.
+         */
+        while (
+            this.redoStack.length
+            && (
+                totalEntries > HISTORY_MAX_ENTRIES
+                || totalBytes > HISTORY_MAX_TOTAL_BYTES
+            )
+        ) {
+            const removed = this.redoStack.shift();
+
+            totalEntries -= 1;
+            totalBytes -= removed.bytes;
+        }
+    }
+
     _getCanvasJSON() {
         return JSON.stringify(this.canvas.toDatalessJSON(WHITEBOARD_OBJECT_PROPS));
     }
 
     _pushHistory(resetRedo = true, options = {}) {
-        if (!this.canvas || this._isApplyingHistory) return;
-
-        const markDirty = options.markDirty !== false;
-        const json = this._getCanvasJSON();
-
-        const latest = this.undoStack[this.undoStack.length - 1];
-        if (latest === json) {
+        if (
+            !this.canvas
+            || this._isApplyingHistory
+        ) {
             return;
         }
 
-        this.undoStack.push(json);
+        const markDirty = (
+            options.markDirty !== false
+        );
+
+        const json = this._getCanvasJSON();
+
+        const latest = (
+            this.undoStack[
+                this.undoStack.length - 1
+            ]
+        );
+
+        if (latest?.json === json) {
+            return;
+        }
+
+        const entry = this._createHistoryEntry(
+            json
+        );
+
+        this.undoStack.push(entry);
 
         if (resetRedo) {
             this.redoStack = [];
         }
 
-        if (this.undoStack.length > 50) {
-            this.undoStack.shift();
-        }
+        /*
+         * Apply both limits after adding the newest state. The newest
+         * current state is always retained, even if that single state is
+         * unusually large.
+         */
+        this._trimHistoryToBudget();
 
         if (markDirty) {
             this._markCanvasDirty();
@@ -1833,27 +1971,27 @@ export class WhiteboardAction extends Component {
     }
 
     _resetHistoryFromCanvas() {
-        if (!this.canvas) {
-            return;
-        }
-
-        this.undoStack = [];
-        this.redoStack = [];
-
-        this._pushHistory(
-            true,
-            {
-                markDirty: false,
-            }
-        );
-
-        /*
-         * Reset only the canvas source. A pending name edit must not be
-         * cleared accidentally.
-         */
-        this._canvasDirty = false;
-        this._syncDirtyState();
+    if (!this.canvas) {
+        return;
     }
+
+    this.undoStack = [];
+    this.redoStack = [];
+
+    this._pushHistory(
+        true,
+        {
+            markDirty: false,
+        }
+    );
+
+    /*
+     * Reset only the canvas dirty source. A pending board-name change
+     * must remain dirty.
+     */
+    this._canvasDirty = false;
+    this._syncDirtyState();
+}
 
     _runWithoutHistory(callback) {
         this._isApplyingHistory = true;

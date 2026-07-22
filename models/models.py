@@ -463,7 +463,7 @@ class WhiteboardBoard(models.Model):
                 return _("Whiteboard data contains an unsafe property.")
             if key in FORBIDDEN_FABRIC_KEYS:
                 return _("Whiteboard data contains unsupported external content.")
-            if key == "path" and object_type != "path":
+            if key == "path" and object_type != "path" and value is not None:
                 return _("Whiteboard object contains unsupported path data.")
             if key == "points" and object_type != "polygon":
                 return _("Whiteboard object contains unsupported polygon data.")
