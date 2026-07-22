@@ -1,6 +1,6 @@
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 import base64
 from io import BytesIO
 import json
@@ -10,11 +10,22 @@ import warnings
 
 
 MAX_JSON_BYTES = 2 * 1024 * 1024             # 2 MB
-MAX_THUMBNAIL_BYTES = 512 * 1024             # 512 KB
+MAX_THUMBNAIL_BYTES = 512 * 1024
 MAX_THUMBNAIL_ENCODED_CHARS = 750_000
 MAX_THUMBNAIL_WIDTH = 2048
 MAX_THUMBNAIL_HEIGHT = 2048
 MAX_THUMBNAIL_PIXELS = 2_000_000
+
+NORMALIZED_THUMBNAIL_MAX_WIDTH = 480
+NORMALIZED_THUMBNAIL_MAX_HEIGHT = 320
+NORMALIZED_THUMBNAIL_MAX_BYTES = 160 * 1024
+NORMALIZED_THUMBNAIL_JPEG_QUALITIES = (
+    78,
+    68,
+    58,
+    48,
+    38,
+)
 
 MAX_BOARDS_PER_USER = 100
 
@@ -660,21 +671,124 @@ class WhiteboardBoard(models.Model):
 
         return result
 
+    def _normalize_thumbnail_image(self, decoded):
+        """
+        Convert a validated thumbnail to a compact JPEG preview.
+
+        Every accepted input format is normalized so direct ORM and RPC
+        callers cannot store unnecessarily large thumbnail files.
+        """
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter(
+                    "error",
+                    Image.DecompressionBombWarning,
+                )
+
+                with Image.open(BytesIO(decoded)) as source_image:
+                    image = ImageOps.exif_transpose(
+                        source_image
+                    )
+
+                    resampling = getattr(
+                        Image,
+                        "Resampling",
+                        Image,
+                    )
+
+                    image.thumbnail(
+                        (
+                            NORMALIZED_THUMBNAIL_MAX_WIDTH,
+                            NORMALIZED_THUMBNAIL_MAX_HEIGHT,
+                        ),
+                        resampling.LANCZOS,
+                    )
+
+                    # JPEG has no alpha channel. Composite transparent
+                    # images onto the white whiteboard background.
+                    if (
+                            image.mode in {"RGBA", "LA"}
+                            or "transparency" in image.info
+                    ):
+                        rgba_image = image.convert("RGBA")
+
+                        normalized_image = Image.new(
+                            "RGB",
+                            rgba_image.size,
+                            color="white",
+                        )
+
+                        normalized_image.paste(
+                            rgba_image,
+                            mask=rgba_image.getchannel("A"),
+                        )
+                    else:
+                        normalized_image = image.convert("RGB")
+
+                    for quality in (
+                            NORMALIZED_THUMBNAIL_JPEG_QUALITIES
+                    ):
+                        output = BytesIO()
+
+                        normalized_image.save(
+                            output,
+                            format="JPEG",
+                            quality=quality,
+                            optimize=True,
+                            progressive=True,
+                        )
+
+                        normalized_bytes = output.getvalue()
+
+                        if (
+                                len(normalized_bytes)
+                                <= NORMALIZED_THUMBNAIL_MAX_BYTES
+                        ):
+                            return True, base64.b64encode(
+                                normalized_bytes
+                            ).decode("ascii")
+
+        except (
+                Image.DecompressionBombError,
+                Image.DecompressionBombWarning,
+                UnidentifiedImageError,
+                OSError,
+                ValueError,
+        ):
+            return False, _(
+                "Thumbnail could not be normalized."
+            )
+
+        return False, _(
+            "Thumbnail could not be reduced to a safe size."
+        )
+
     def _extract_thumbnail_base64(self, thumbnail_value):
         if not thumbnail_value:
             return True, False
 
         if isinstance(thumbnail_value, bytes):
             try:
-                thumbnail_value = thumbnail_value.decode("ascii")
+                thumbnail_value = thumbnail_value.decode(
+                    "ascii"
+                )
             except UnicodeDecodeError:
-                return False, _("Thumbnail data is invalid.")
+                return False, _(
+                    "Thumbnail data is invalid."
+                )
 
         if not isinstance(thumbnail_value, str):
-            return False, _("Thumbnail data is invalid.")
+            return False, _(
+                "Thumbnail data is invalid."
+            )
 
-        if len(thumbnail_value) > MAX_THUMBNAIL_ENCODED_CHARS:
-            return False, _("Thumbnail is too large.")
+        if (
+                len(thumbnail_value)
+                > MAX_THUMBNAIL_ENCODED_CHARS
+        ):
+            return False, _(
+                "Thumbnail is too large."
+            )
 
         declared_format = None
 
@@ -691,19 +805,34 @@ class WhiteboardBoard(models.Model):
             declared_format = THUMBNAIL_MIME_FORMATS[
                 data_url_match.group(1).lower()
             ]
-            thumbnail_b64 = data_url_match.group(2)
+
+            thumbnail_b64 = (
+                data_url_match.group(2)
+            )
         else:
-            if thumbnail_value.lstrip().lower().startswith("data:"):
+            if (
+                    thumbnail_value
+                            .lstrip()
+                            .lower()
+                            .startswith("data:")
+            ):
                 return False, _(
-                    "Thumbnail must be a supported base64 image."
+                    "Thumbnail must be a supported "
+                    "base64 image."
                 )
 
             thumbnail_b64 = thumbnail_value
 
-        thumbnail_b64 = re.sub(r"\s+", "", thumbnail_b64)
+        thumbnail_b64 = re.sub(
+            r"\s+",
+            "",
+            thumbnail_b64,
+        )
 
         if not thumbnail_b64:
-            return False, _("Thumbnail data is invalid.")
+            return False, _(
+                "Thumbnail data is invalid."
+            )
 
         try:
             decoded = base64.b64decode(
@@ -711,10 +840,14 @@ class WhiteboardBoard(models.Model):
                 validate=True,
             )
         except (TypeError, ValueError):
-            return False, _("Thumbnail base64 data is invalid.")
+            return False, _(
+                "Thumbnail base64 data is invalid."
+            )
 
         if len(decoded) > MAX_THUMBNAIL_BYTES:
-            return False, _("Thumbnail is too large.")
+            return False, _(
+                "Thumbnail is too large."
+            )
 
         try:
             with warnings.catch_warnings():
@@ -723,10 +856,17 @@ class WhiteboardBoard(models.Model):
                     Image.DecompressionBombWarning,
                 )
 
-                with Image.open(BytesIO(decoded)) as image:
+                with Image.open(
+                        BytesIO(decoded)
+                ) as image:
                     image_format = image.format
                     width, height = image.size
-                    frame_count = getattr(image, "n_frames", 1)
+
+                    frame_count = getattr(
+                        image,
+                        "n_frames",
+                        1,
+                    )
 
                     image.verify()
 
@@ -737,16 +877,25 @@ class WhiteboardBoard(models.Model):
                 OSError,
                 ValueError,
         ):
-            return False, _("Thumbnail is not a valid image.")
+            return False, _(
+                "Thumbnail is not a valid image."
+            )
 
-        if image_format not in ALLOWED_THUMBNAIL_FORMATS:
+        if (
+                image_format
+                not in ALLOWED_THUMBNAIL_FORMATS
+        ):
             return False, _(
                 "Thumbnail image format is not supported."
             )
 
-        if declared_format and image_format != declared_format:
+        if (
+                declared_format
+                and image_format != declared_format
+        ):
             return False, _(
-                "Thumbnail image type does not match its data URL."
+                "Thumbnail image type does not match "
+                "its data URL."
             )
 
         if frame_count != 1:
@@ -761,9 +910,13 @@ class WhiteboardBoard(models.Model):
                 or height > MAX_THUMBNAIL_HEIGHT
                 or width * height > MAX_THUMBNAIL_PIXELS
         ):
-            return False, _("Thumbnail dimensions are too large.")
+            return False, _(
+                "Thumbnail dimensions are too large."
+            )
 
-        return True, thumbnail_b64
+        return self._normalize_thumbnail_image(
+            decoded
+        )
 
     # -------------------------------------------------------------------------
     # RPC API used by OWL action

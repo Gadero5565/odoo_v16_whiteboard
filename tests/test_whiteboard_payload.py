@@ -15,6 +15,9 @@ from ..models.models import (
     MAX_TEXT_LENGTH,
     MAX_THUMBNAIL_BYTES,
     MAX_THUMBNAIL_WIDTH,
+    NORMALIZED_THUMBNAIL_MAX_BYTES,
+    NORMALIZED_THUMBNAIL_MAX_HEIGHT,
+    NORMALIZED_THUMBNAIL_MAX_WIDTH,
 )
 
 
@@ -476,7 +479,7 @@ class TestWhiteboardPayloadValidation(TransactionCase):
             2,
         )
 
-    def test_valid_thumbnail_data_url_is_accepted(self):
+    def test_valid_thumbnail_data_url_is_normalized(self):
         thumbnail_b64 = self._png_base64()
 
         valid, normalized = (
@@ -487,10 +490,42 @@ class TestWhiteboardPayloadValidation(TransactionCase):
         )
 
         self.assertTrue(valid)
-        self.assertEqual(
+        self.assertNotEqual(
             normalized,
             thumbnail_b64,
         )
+
+        normalized_bytes = base64.b64decode(
+            normalized
+        )
+
+        self.assertLessEqual(
+            len(normalized_bytes),
+            NORMALIZED_THUMBNAIL_MAX_BYTES,
+        )
+
+        with Image.open(
+                BytesIO(normalized_bytes)
+        ) as image:
+            self.assertEqual(
+                image.format,
+                "JPEG",
+            )
+
+            self.assertEqual(
+                image.mode,
+                "RGB",
+            )
+
+            self.assertLessEqual(
+                image.width,
+                NORMALIZED_THUMBNAIL_MAX_WIDTH,
+            )
+
+            self.assertLessEqual(
+                image.height,
+                NORMALIZED_THUMBNAIL_MAX_HEIGHT,
+            )
 
     def test_thumbnail_must_be_a_real_image(self):
         fake_image = base64.b64encode(
@@ -698,4 +733,88 @@ class TestWhiteboardPayloadValidation(TransactionCase):
         self.assertEqual(
             result["current_board"]["name"],
             "Old selected board",
+        )
+
+    def test_large_valid_thumbnail_is_resized(self):
+        source_b64 = self._png_base64(
+            width=1200,
+            height=800,
+        )
+
+        valid, normalized = (
+            self.Board._extract_thumbnail_base64(
+                source_b64
+            )
+        )
+
+        self.assertTrue(valid)
+
+        normalized_bytes = base64.b64decode(
+            normalized
+        )
+
+        with Image.open(
+                BytesIO(normalized_bytes)
+        ) as image:
+            self.assertEqual(
+                image.format,
+                "JPEG",
+            )
+
+            self.assertLessEqual(
+                image.width,
+                NORMALIZED_THUMBNAIL_MAX_WIDTH,
+            )
+
+            self.assertLessEqual(
+                image.height,
+                NORMALIZED_THUMBNAIL_MAX_HEIGHT,
+            )
+
+            self.assertEqual(
+                image.size,
+                (480, 320),
+            )
+
+        self.assertLessEqual(
+            len(normalized_bytes),
+            NORMALIZED_THUMBNAIL_MAX_BYTES,
+        )
+
+    def test_direct_create_stores_normalized_thumbnail(self):
+        source_b64 = self._png_base64(
+            width=800,
+            height=600,
+        )
+
+        board = self.Board.create({
+            "name": "Normalized thumbnail",
+            "thumbnail": source_b64,
+        })
+
+        stored_bytes = base64.b64decode(
+            board.thumbnail
+        )
+
+        with Image.open(
+                BytesIO(stored_bytes)
+        ) as image:
+            self.assertEqual(
+                image.format,
+                "JPEG",
+            )
+
+            self.assertLessEqual(
+                image.width,
+                NORMALIZED_THUMBNAIL_MAX_WIDTH,
+            )
+
+            self.assertLessEqual(
+                image.height,
+                NORMALIZED_THUMBNAIL_MAX_HEIGHT,
+            )
+
+        self.assertLessEqual(
+            len(stored_bytes),
+            NORMALIZED_THUMBNAIL_MAX_BYTES,
         )

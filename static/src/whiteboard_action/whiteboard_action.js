@@ -35,6 +35,9 @@ const HISTORY_MAX_TOTAL_BYTES = 12 * 1024 * 1024;
 
 const BOARD_LIST_PAGE_SIZE = 25;
 
+const THUMBNAIL_MULTIPLIER = 0.18;
+const THUMBNAIL_JPEG_QUALITY = 0.72;
+
 export class WhiteboardAction extends Component {
     setup() {
         this.orm = useService("orm");
@@ -1740,8 +1743,9 @@ export class WhiteboardAction extends Component {
 
         try {
             const thumbnail = this.canvas.toDataURL({
-                format: "png",
-                multiplier: 0.2,
+                format: "jpeg",
+                quality: THUMBNAIL_JPEG_QUALITY,
+                multiplier: THUMBNAIL_MULTIPLIER,
             });
 
             const result = await this.orm.call(
