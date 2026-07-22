@@ -1,8 +1,17 @@
 /** @odoo-module **/
 
-import { Component, onMounted, onWillStart, onWillUnmount, useRef, useState } from "@odoo/owl";
+import {
+    Component,
+    onMounted,
+    onWillStart,
+    onWillUnmount,
+    useRef,
+    useState,
+} from "@odoo/owl";
+
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { useSetupAction } from "@web/webclient/actions/action_hook";
 
 import {
     WHITEBOARD_OBJECT_PROPS,
@@ -50,6 +59,19 @@ export class WhiteboardAction extends Component {
             boards: [],
         });
 
+        /*
+        * Dirty state has two independent sources:
+        *
+        * - canvasDirty: drawing, text, shape, undo/redo changes
+        * - nameDirty: board-name changes
+        *
+        * Keeping them separate means reverting the board name does not
+        * incorrectly clear unsaved canvas changes.
+        */
+        this._canvasDirty = false;
+        this._nameDirty = false;
+        this._savedBoardName = "My Whiteboard";
+
         this.undoStack = [];
         this.redoStack = [];
         this._isApplyingHistory = false;
@@ -58,11 +80,47 @@ export class WhiteboardAction extends Component {
         this._resizeCanvas = this._resizeCanvas.bind(this);
 
         this._beforeUnload = (ev) => {
-            if (!this.state.dirty) return;
+            if (!this.state.dirty) {
+                return;
+            }
+
             ev.preventDefault();
             ev.returnValue = "";
+
             return "";
         };
+
+        this._beforeLeave = () => {
+            /*
+             * Do not unmount the client action while its save request is
+             * still running. This prevents the response from arriving after
+             * the whiteboard component has already been destroyed.
+             */
+            if (this.state.saving) {
+                this.notification.add(
+                    "A whiteboard save is still in progress.",
+                    {
+                        type: "warning",
+                    }
+                );
+
+                return false;
+            }
+
+            if (!this.state.dirty) {
+                return true;
+            }
+
+            return window.confirm(
+                "You have unsaved whiteboard changes. "
+                + "Leave this page and discard them?"
+            );
+        };
+
+        useSetupAction({
+            beforeUnload: this._beforeUnload,
+            beforeLeave: this._beforeLeave,
+        });
 
         this._handleKeyDown = (ev) => {
             const targetTag = ev.target?.tagName?.toLowerCase();
@@ -95,7 +153,6 @@ export class WhiteboardAction extends Component {
                     await this._loadBoardFromServer(this.initialBoardId);
                     this._resizeCanvas();
                     window.addEventListener("resize", this._resizeCanvas);
-                    window.addEventListener("beforeunload", this._beforeUnload);
                     window.addEventListener("keydown", this._handleKeyDown);
                 }
             } finally {
@@ -358,6 +415,44 @@ export class WhiteboardAction extends Component {
     }
 
     // -------------------------------------------------------------------------
+    // Dirty-state helpers
+    // -------------------------------------------------------------------------
+
+    _syncDirtyState() {
+        this.state.dirty = (
+            this._canvasDirty
+            || this._nameDirty
+        );
+    }
+
+    _markCanvasDirty() {
+        this._canvasDirty = true;
+        this._syncDirtyState();
+    }
+
+    _resetDirtyState(savedBoardName = null) {
+        if (savedBoardName !== null) {
+            this._savedBoardName = savedBoardName;
+        }
+
+        this._canvasDirty = false;
+        this._nameDirty = false;
+
+        this._syncDirtyState();
+    }
+
+    onBoardNameInput(ev) {
+        const nextName = ev.target.value;
+
+        this.state.boardName = nextName;
+        this._nameDirty = (
+            nextName !== this._savedBoardName
+        );
+
+        this._syncDirtyState();
+    }
+
+    // -------------------------------------------------------------------------
     // UI handlers
     // -------------------------------------------------------------------------
 
@@ -486,7 +581,7 @@ export class WhiteboardAction extends Component {
 
         this._applyJSON(previous).then((ok) => {
             if (ok) {
-                this.state.dirty = true;
+                this._markCanvasDirty();
             }
         });
     }
@@ -501,7 +596,7 @@ export class WhiteboardAction extends Component {
 
         this._applyJSON(next).then((ok) => {
             if (ok) {
-                this.state.dirty = true;
+                this._markCanvasDirty();
             }
         });
     }
@@ -1260,37 +1355,59 @@ export class WhiteboardAction extends Component {
     }
 
     async _applyBoardPayload(payload) {
-    if (!payload) return false;
+        if (!payload) {
+            return false;
+        }
 
-    this.state.boardId = payload.id;
-    this.state.boardName = payload.name || "Untitled Board";
-    this.state.boardRevision = Number.isInteger(payload.revision)
-        ? payload.revision
-        : 0;
+        this.state.boardId = payload.id;
 
-    let applied = true;
+        this.state.boardName = (
+            payload.name
+            || "Untitled Board"
+        );
 
-    if (payload.data_json) {
-        applied = await this._applyJSON(payload.data_json);
-    } else {
+        this.state.boardRevision = (
+            Number.isInteger(payload.revision)
+                ? payload.revision
+                : 0
+        );
+
+        /*
+         * The loaded server name becomes the comparison baseline for
+         * future name edits.
+         */
+        this._savedBoardName = this.state.boardName;
+        this._nameDirty = false;
+
+        let applied = true;
+
+        if (payload.data_json) {
+            applied = await this._applyJSON(
+                payload.data_json
+            );
+        } else {
+            this._runWithoutHistory(() => {
+                this._clearCanvasObjects();
+            });
+        }
+
+        if (!applied) {
+            return false;
+        }
+
         this._runWithoutHistory(() => {
-            this._clearCanvasObjects();
+            this._updateAllConnectors();
         });
+
+        this._resetHistoryFromCanvas();
+        this._resetDirtyState(
+            this.state.boardName
+        );
+
+        this._resizeCanvas();
+
+        return true;
     }
-
-    if (!applied) return false;
-
-    this._runWithoutHistory(() => {
-        this._updateAllConnectors();
-    });
-
-    this._resetHistoryFromCanvas();
-    this.state.dirty = false;
-
-    this._resizeCanvas();
-
-    return true;
-}
 
     async save() {
     if (
@@ -1339,21 +1456,31 @@ export class WhiteboardAction extends Component {
 
         if (result?.board) {
             this.state.boardId = result.board.id;
-            this.state.boardName =
+
+            this.state.boardName = (
                 result.board.name
-                || this.state.boardName;
+                || this.state.boardName
+            );
 
             if (
                 Number.isInteger(
                     result.board.revision
                 )
             ) {
-                this.state.boardRevision =
-                    result.board.revision;
+                this.state.boardRevision = (
+                    result.board.revision
+                );
             }
         }
 
-        this.state.dirty = false;
+        /*
+        * Clear dirty state only after the server confirms that the save
+        * succeeded. Validation errors, conflicts, and network failures
+        * return earlier or enter catch, so their dirty state is preserved.
+        */
+        this._resetDirtyState(
+            this.state.boardName
+        );
 
         await this._loadBoardsList();
 
@@ -1406,7 +1533,7 @@ export class WhiteboardAction extends Component {
         }
 
         if (markDirty) {
-            this.state.dirty = true;
+            this._markCanvasDirty();
         }
     }
 
@@ -1430,13 +1557,26 @@ export class WhiteboardAction extends Component {
     }
 
     _resetHistoryFromCanvas() {
-        if (!this.canvas) return;
+        if (!this.canvas) {
+            return;
+        }
 
         this.undoStack = [];
         this.redoStack = [];
 
-        this._pushHistory(true, { markDirty: false });
-        this.state.dirty = false;
+        this._pushHistory(
+            true,
+            {
+                markDirty: false,
+            }
+        );
+
+        /*
+         * Reset only the canvas source. A pending name edit must not be
+         * cleared accidentally.
+         */
+        this._canvasDirty = false;
+        this._syncDirtyState();
     }
 
     _runWithoutHistory(callback) {
