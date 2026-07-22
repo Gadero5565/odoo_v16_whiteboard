@@ -17,9 +17,10 @@ MAX_THUMBNAIL_HEIGHT = 2048
 MAX_THUMBNAIL_PIXELS = 2_000_000
 
 MAX_BOARDS_PER_USER = 100
-MAX_BOARD_LIST_RESULTS = 100
 
-# Phase 1A payload complexity limits.
+DEFAULT_BOARD_PAGE_SIZE = 25
+MAX_BOARD_LIST_RESULTS = 50
+
 MAX_CANVAS_OBJECTS = 1000
 MAX_GROUP_DEPTH = 3
 MAX_JSON_DEPTH = 12
@@ -297,6 +298,48 @@ class WhiteboardBoard(models.Model):
                 else False
             ),
         }
+
+    def _board_list_item(self, board):
+        board.ensure_one()
+
+        return {
+            "id": board.id,
+            "name": board.name,
+            "write_date": (
+                fields.Datetime.to_string(
+                    board.write_date
+                )
+                if board.write_date
+                else False
+            ),
+        }
+
+    @api.model
+    def _normalize_board_page_integer(
+            self,
+            value,
+            default,
+            minimum,
+            maximum,
+    ):
+        """
+        Normalize untrusted pagination values received through RPC.
+
+        Boolean values are rejected explicitly because bool is a
+        subclass of int in Python.
+        """
+        if isinstance(value, bool):
+            return default
+
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return default
+
+        return max(
+            minimum,
+            min(normalized, maximum),
+        )
 
     @api.model
     def _validate_expected_revision(self, expected_revision):
@@ -727,31 +770,97 @@ class WhiteboardBoard(models.Model):
     # -------------------------------------------------------------------------
 
     @api.model
-    def get_user_boards(self):
+    def get_user_boards(
+            self,
+            offset=0,
+            limit=None,
+            current_board_id=None,
+    ):
         """
-        Return the newest active boards belonging to the current user.
+        Return one page of active boards owned by the current user.
+
+        The currently open board is returned separately when it falls
+        outside the requested page. This keeps an older board visible in
+        the selector without loading the full board collection.
         """
-        boards = self.search(
-            [
-                ("user_id", "=", self.env.uid),
-                ("active", "=", True),
-            ],
-            order="write_date desc, id desc",
-            limit=MAX_BOARD_LIST_RESULTS,
+        normalized_offset = (
+            self._normalize_board_page_integer(
+                offset,
+                default=0,
+                minimum=0,
+                maximum=MAX_BOARDS_PER_USER,
+            )
         )
 
-        return [
-            {
-                "id": board.id,
-                "name": board.name,
-                "write_date": (
-                    fields.Datetime.to_string(board.write_date)
-                    if board.write_date
-                    else False
-                ),
-            }
-            for board in boards
+        normalized_limit = (
+            self._normalize_board_page_integer(
+                limit,
+                default=DEFAULT_BOARD_PAGE_SIZE,
+                minimum=1,
+                maximum=MAX_BOARD_LIST_RESULTS,
+            )
+        )
+
+        domain = [
+            ("user_id", "=", self.env.uid),
+            ("active", "=", True),
         ]
+
+        # Fetch one additional record so has_more can be determined
+        # without issuing a separate search_count query.
+        fetched_boards = self.search(
+            domain,
+            order="write_date desc, id desc",
+            offset=normalized_offset,
+            limit=normalized_limit + 1,
+        )
+
+        has_more = (
+                len(fetched_boards)
+                > normalized_limit
+        )
+
+        page_boards = fetched_boards[
+            :normalized_limit
+        ]
+
+        page_board_ids = set(
+            page_boards.ids
+        )
+
+        current_board_item = False
+
+        if current_board_id:
+            current_board = (
+                self._get_current_user_board(
+                    current_board_id
+                )
+            )
+
+            if (
+                    current_board
+                    and current_board.id
+                    not in page_board_ids
+            ):
+                current_board_item = (
+                    self._board_list_item(
+                        current_board
+                    )
+                )
+
+        return {
+            "boards": [
+                self._board_list_item(board)
+                for board in page_boards
+            ],
+            "current_board": current_board_item,
+            "offset": normalized_offset,
+            "next_offset": (
+                    normalized_offset
+                    + len(page_boards)
+            ),
+            "has_more": has_more,
+        }
 
     @api.model
     def create_board(self, name=None):

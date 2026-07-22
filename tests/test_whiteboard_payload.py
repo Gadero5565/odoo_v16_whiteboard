@@ -447,18 +447,34 @@ class TestWhiteboardPayloadValidation(TransactionCase):
                 "MAX_BOARD_LIST_RESULTS",
                 2,
         ):
-            boards = self.Board.get_user_boards()
+            result = self.Board.get_user_boards(
+                offset=0,
+                limit=100,
+            )
 
         board_ids = [
             board["id"]
-            for board in boards
+            for board in result["boards"]
         ]
 
         self.assertEqual(
             board_ids,
             [third.id, second.id],
         )
-        self.assertNotIn(first.id, board_ids)
+
+        self.assertNotIn(
+            first.id,
+            board_ids,
+        )
+
+        self.assertTrue(
+            result["has_more"],
+        )
+
+        self.assertEqual(
+            result["next_offset"],
+            2,
+        )
 
     def test_valid_thumbnail_data_url_is_accepted(self):
         thumbnail_b64 = self._png_base64()
@@ -576,3 +592,110 @@ class TestWhiteboardPayloadValidation(TransactionCase):
         valid, _error = self._validate(payload)
 
         self.assertFalse(valid)
+
+    def test_board_list_pagination_returns_distinct_pages(self):
+        boards = [
+            self.Board.create({
+                "name": "Pagination %s" % index,
+            })
+            for index in range(5)
+        ]
+
+        expected_ids = [
+            board.id
+            for board in reversed(boards)
+        ]
+
+        first_page = self.Board.get_user_boards(
+            offset=0,
+            limit=2,
+        )
+
+        second_page = self.Board.get_user_boards(
+            offset=first_page["next_offset"],
+            limit=2,
+        )
+
+        first_ids = [
+            board["id"]
+            for board in first_page["boards"]
+        ]
+
+        second_ids = [
+            board["id"]
+            for board in second_page["boards"]
+        ]
+
+        self.assertEqual(
+            first_ids,
+            expected_ids[:2],
+        )
+
+        self.assertEqual(
+            second_ids,
+            expected_ids[2:4],
+        )
+
+        self.assertFalse(
+            set(first_ids)
+            & set(second_ids)
+        )
+
+        self.assertTrue(
+            first_page["has_more"],
+        )
+
+        self.assertTrue(
+            second_page["has_more"],
+        )
+
+        self.assertEqual(
+            second_page["next_offset"],
+            4,
+        )
+
+    def test_board_list_returns_current_board_outside_page(self):
+        oldest_board = self.Board.create({
+            "name": "Old selected board",
+        })
+
+        newer_boards = [
+            self.Board.create({
+                "name": "New board %s" % index,
+            })
+            for index in range(3)
+        ]
+
+        result = self.Board.get_user_boards(
+            offset=0,
+            limit=2,
+            current_board_id=oldest_board.id,
+        )
+
+        page_ids = [
+            board["id"]
+            for board in result["boards"]
+        ]
+
+        self.assertEqual(
+            page_ids,
+            [
+                newer_boards[2].id,
+                newer_boards[1].id,
+            ],
+        )
+
+        self.assertNotIn(
+            oldest_board.id,
+            page_ids,
+        )
+
+        self.assertEqual(
+            result["current_board"]["id"],
+            oldest_board.id,
+        )
+
+        self.assertEqual(
+            result["current_board"]["name"],
+            "Old selected board",
+        )

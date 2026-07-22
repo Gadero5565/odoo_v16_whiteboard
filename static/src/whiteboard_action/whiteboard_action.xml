@@ -60,18 +60,26 @@
                                 </button>
 
                                 <div class="o_wb_input_group">
-                                    <label class="o_wb_input_label">Select board</label>
+                                    <label class="o_wb_input_label">
+                                        Select board
+                                    </label>
+
                                     <div class="o_wb_input_wrap">
                                         <i class="fa fa-folder-open-o o_wb_input_icon"/>
+
                                         <select class="o_wb_input o_wb_select"
                                                 t-on-change="onSelectBoard"
                                                 t-att-value="state.boardId || ''"
-                                                t-att-disabled="state.loading or state.saving">
-                                            <option value="" disabled="1" t-att-selected="!state.boardId">
+                                                t-att-disabled="state.loading or state.saving or state.boardsLoading">
+                                            <option value=""
+                                                    disabled="1"
+                                                    t-att-selected="!state.boardId">
                                                 Select board
                                             </option>
 
-                                            <t t-foreach="state.boards" t-as="board" t-key="board.id">
+                                            <t t-foreach="state.boards"
+                                               t-as="board"
+                                               t-key="board.id">
                                                 <option t-att-value="board.id"
                                                         t-att-selected="board.id === state.boardId">
                                                     <t t-esc="board.name"/>
@@ -79,6 +87,23 @@
                                             </t>
                                         </select>
                                     </div>
+
+                                    <button t-if="state.boardsHasMore"
+                                            type="button"
+                                            class="o_wb_button o_wb_button_tool o_wb_button_full"
+                                            t-on-click="loadMoreBoards"
+                                            t-att-disabled="state.boardsLoading or state.loading or state.saving"
+                                            title="Load more whiteboards">
+                                        <i t-attf-class="fa #{state.boardsLoading ? 'fa-spinner fa-spin' : 'fa-chevron-down'}"/>
+
+                                        <t t-if="state.boardsLoading">
+                                            Loading…
+                                        </t>
+
+                                        <t t-else="">
+                                            Load more boards
+                                        </t>
+                                    </button>
                                 </div>
 
                                 <div class="o_wb_input_group">

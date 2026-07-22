@@ -91,13 +91,22 @@ class TestWhiteboardAccessControl(TransactionCase):
         board_a = self._create_board_a()
         board_b = self._create_board_b()
 
+        result = self.BoardA.get_user_boards()
+
         board_ids = {
             item["id"]
-            for item in self.BoardA.get_user_boards()
+            for item in result["boards"]
         }
 
-        self.assertIn(board_a.id, board_ids)
-        self.assertNotIn(board_b.id, board_ids)
+        self.assertIn(
+            board_a.id,
+            board_ids,
+        )
+
+        self.assertNotIn(
+            board_b.id,
+            board_ids,
+        )
 
     def test_latest_board_rpc_never_returns_another_users_board(self):
         board_b = self._create_board_b()
@@ -281,4 +290,33 @@ class TestWhiteboardAccessControl(TransactionCase):
         self.assertEqual(
             action["params"]["board_id"],
             board_a.id,
+        )
+
+    def test_board_list_cannot_include_foreign_current_board(self):
+        board_a = self._create_board_a()
+        board_b = self._create_board_b()
+
+        result = self.BoardA.get_user_boards(
+            offset=0,
+            limit=1,
+            current_board_id=board_b.id,
+        )
+
+        returned_ids = {
+            board["id"]
+            for board in result["boards"]
+        }
+
+        self.assertIn(
+            board_a.id,
+            returned_ids,
+        )
+
+        self.assertNotIn(
+            board_b.id,
+            returned_ids,
+        )
+
+        self.assertFalse(
+            result["current_board"],
         )

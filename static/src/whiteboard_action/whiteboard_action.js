@@ -33,6 +33,8 @@ const AUTOSAVE_RETRY_MS = 10000;
 const HISTORY_MAX_ENTRIES = 50;
 const HISTORY_MAX_TOTAL_BYTES = 12 * 1024 * 1024;
 
+const BOARD_LIST_PAGE_SIZE = 25;
+
 export class WhiteboardAction extends Component {
     setup() {
         this.orm = useService("orm");
@@ -62,7 +64,11 @@ export class WhiteboardAction extends Component {
             connectorFromNodeId: null,
 
             templates: WHITEBOARD_TEMPLATES,
+
             boards: [],
+            boardsLoading: false,
+            boardsHasMore: false,
+            boardsNextOffset: 0,
         });
 
         /*
@@ -1462,21 +1468,124 @@ export class WhiteboardAction extends Component {
     // Server load/save
     // -------------------------------------------------------------------------
 
-    async _loadBoardsList() {
+    async _loadBoardsList({ append = false } = {}) {
+        if (this.state.boardsLoading) {
+            return this.state.boards;
+        }
+
+        this.state.boardsLoading = true;
+
+        const offset = append
+            ? this.state.boardsNextOffset
+            : 0;
+
         try {
-            const boards = await this.orm.call(
+            const result = await this.orm.call(
                 "whiteboard.board",
                 "get_user_boards",
-                []
+                [
+                    offset,
+                    BOARD_LIST_PAGE_SIZE,
+                    this.state.boardId,
+                ]
             );
 
-            this.state.boards = boards || [];
+            const pageBoards = Array.isArray(
+                result?.boards
+            )
+                ? result.boards
+                : [];
+
+            const currentBoard = (
+                result?.current_board
+                || null
+            );
+
+            const candidates = append
+                ? [
+                    ...this.state.boards,
+                    ...pageBoards,
+                ]
+                : [
+                    ...(currentBoard
+                        ? [currentBoard]
+                        : []),
+                    ...pageBoards,
+                ];
+
+            /*
+             * Remove duplicates while preserving the first occurrence.
+             * When an old current board is outside the first page, its
+             * separately returned selector item stays at the top.
+             */
+            const seenBoardIds = new Set();
+
+            this.state.boards = candidates.filter(
+                (board) => {
+                    if (
+                        !board
+                        || !Number.isInteger(board.id)
+                        || seenBoardIds.has(board.id)
+                    ) {
+                        return false;
+                    }
+
+                    seenBoardIds.add(board.id);
+
+                    return true;
+                }
+            );
+
+            this.state.boardsHasMore = Boolean(
+                result?.has_more
+            );
+
+            this.state.boardsNextOffset = (
+                Number.isInteger(
+                    result?.next_offset
+                )
+                    ? result.next_offset
+                    : offset + pageBoards.length
+            );
+
             return this.state.boards;
         } catch {
-            this.state.boards = [];
-            this.notification.add("Could not load whiteboard list.", { type: "danger" });
-            return [];
+            /*
+             * Preserve already loaded pages when loading another page
+             * fails. Clear the list only when the initial request fails.
+             */
+            if (!append) {
+                this.state.boards = [];
+                this.state.boardsHasMore = false;
+                this.state.boardsNextOffset = 0;
+            }
+
+            this.notification.add(
+                append
+                    ? "Could not load more whiteboards."
+                    : "Could not load whiteboard list.",
+                {
+                    type: "danger",
+                }
+            );
+
+            return this.state.boards;
+        } finally {
+            this.state.boardsLoading = false;
         }
+    }
+
+    async loadMoreBoards() {
+        if (
+            this.state.boardsLoading
+            || !this.state.boardsHasMore
+        ) {
+            return;
+        }
+
+        await this._loadBoardsList({
+            append: true,
+        });
     }
 
     async _loadBoardFromServer(boardId = null) {
