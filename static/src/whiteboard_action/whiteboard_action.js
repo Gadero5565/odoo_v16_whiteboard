@@ -27,6 +27,9 @@ import {
     buildWhiteboardTemplate,
 } from "./whiteboard_templates";
 
+const AUTOSAVE_DEBOUNCE_MS = 1500;
+const AUTOSAVE_RETRY_MS = 10000;
+
 export class WhiteboardAction extends Component {
     setup() {
         this.orm = useService("orm");
@@ -71,6 +74,32 @@ export class WhiteboardAction extends Component {
         this._canvasDirty = false;
         this._nameDirty = false;
         this._savedBoardName = "My Whiteboard";
+
+        /*
+        * Incremented whenever the corresponding editable content changes.
+        * These counters let us detect changes made while a save request
+        * is still in progress.
+        */
+        this._canvasChangeVersion = 0;
+        this._nameChangeVersion = 0;
+
+        /*
+        * One timer handles both normal debounce and delayed network retry.
+        */
+        this._autosaveTimer = null;
+
+        /*
+        * A conflict must remain blocked until the board is reloaded.
+        * A validation failure remains blocked until the user changes
+        * something again.
+        */
+        this._autosaveBlockedReason = null;
+
+        /*
+        * Avoid showing the same network error every ten seconds while the
+        * connection remains unavailable.
+        */
+        this._autosaveFailureNotified = false;
 
         this.undoStack = [];
         this.redoStack = [];
@@ -161,9 +190,17 @@ export class WhiteboardAction extends Component {
         });
 
         onWillUnmount(() => {
-            window.removeEventListener("resize", this._resizeCanvas);
-            window.removeEventListener("beforeunload", this._beforeUnload);
-            window.removeEventListener("keydown", this._handleKeyDown);
+            window.removeEventListener(
+                "resize",
+                this._resizeCanvas
+            );
+
+            window.removeEventListener(
+                "keydown",
+                this._handleKeyDown
+            );
+
+            this._cancelAutosave();
 
             if (this._historyTimer) {
                 clearTimeout(this._historyTimer);
@@ -415,7 +452,7 @@ export class WhiteboardAction extends Component {
     }
 
     // -------------------------------------------------------------------------
-    // Dirty-state helpers
+    // Dirty-state and autosave helpers
     // -------------------------------------------------------------------------
 
     _syncDirtyState() {
@@ -423,11 +460,35 @@ export class WhiteboardAction extends Component {
             this._canvasDirty
             || this._nameDirty
         );
+
+        if (!this.state.dirty) {
+            this._cancelAutosave();
+        }
+    }
+
+    _clearRecoverableAutosaveBlock() {
+        /*
+         * A user edit may correct a validation problem, so validation
+         * failures can be retried after another change.
+         *
+         * A revision conflict cannot be fixed by further local edits.
+         * The board must be reloaded first.
+         */
+        if (
+            this._autosaveBlockedReason
+            === "validation"
+        ) {
+            this._autosaveBlockedReason = null;
+        }
     }
 
     _markCanvasDirty() {
         this._canvasDirty = true;
+        this._canvasChangeVersion += 1;
+
+        this._clearRecoverableAutosaveBlock();
         this._syncDirtyState();
+        this._scheduleAutosave();
     }
 
     _resetDirtyState(savedBoardName = null) {
@@ -438,18 +499,85 @@ export class WhiteboardAction extends Component {
         this._canvasDirty = false;
         this._nameDirty = false;
 
+        this._canvasChangeVersion = 0;
+        this._nameChangeVersion = 0;
+
+        this._autosaveBlockedReason = null;
+        this._autosaveFailureNotified = false;
+
+        this._cancelAutosave();
         this._syncDirtyState();
     }
 
     onBoardNameInput(ev) {
         const nextName = ev.target.value;
+        const previousName = this.state.boardName;
 
         this.state.boardName = nextName;
+
+        if (nextName !== previousName) {
+            this._nameChangeVersion += 1;
+            this._clearRecoverableAutosaveBlock();
+        }
+
         this._nameDirty = (
             nextName !== this._savedBoardName
         );
 
         this._syncDirtyState();
+
+        if (this.state.dirty) {
+            this._scheduleAutosave();
+        }
+    }
+
+    _cancelAutosave() {
+        if (!this._autosaveTimer) {
+            return;
+        }
+
+        clearTimeout(this._autosaveTimer);
+        this._autosaveTimer = null;
+    }
+
+    _scheduleAutosave(
+        delay = AUTOSAVE_DEBOUNCE_MS
+    ) {
+        this._cancelAutosave();
+
+        if (
+            !this.state.dirty
+            || this.state.loading
+            || this.state.saving
+            || !this.state.boardId
+            || this._autosaveBlockedReason
+        ) {
+            return;
+        }
+
+        this._autosaveTimer = window.setTimeout(
+            () => {
+                this._autosaveTimer = null;
+                void this._runAutosave();
+            },
+            delay
+        );
+    }
+
+    async _runAutosave() {
+        if (
+            !this.state.dirty
+            || this.state.loading
+            || this.state.saving
+            || !this.state.boardId
+            || this._autosaveBlockedReason
+        ) {
+            return;
+        }
+
+        await this._saveBoard({
+            manual: false,
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -1359,6 +1487,15 @@ export class WhiteboardAction extends Component {
             return false;
         }
 
+        /*
+         * A pending timer must never save the previous board after a
+         * confirmed board switch.
+         */
+        this._cancelAutosave();
+
+        this._autosaveBlockedReason = null;
+        this._autosaveFailureNotified = false;
+
         this.state.boardId = payload.id;
 
         this.state.boardName = (
@@ -1372,11 +1509,10 @@ export class WhiteboardAction extends Component {
                 : 0
         );
 
-        /*
-         * The loaded server name becomes the comparison baseline for
-         * future name edits.
-         */
-        this._savedBoardName = this.state.boardName;
+        this._savedBoardName = (
+            this.state.boardName
+        );
+
         this._nameDirty = false;
 
         let applied = true;
@@ -1410,57 +1546,116 @@ export class WhiteboardAction extends Component {
     }
 
     async save() {
-    if (
-        !this.canvas
-        || !this.state.boardId
-        || this.state.saving
-    ) {
-        return;
+        /*
+         * The Save button always takes priority over a pending autosave.
+         */
+        this._cancelAutosave();
+
+        await this._saveBoard({
+            manual: true,
+        });
     }
 
-    this._flushDebouncedHistory();
-
-    this.state.saving = true;
-
-    try {
-        const dataJson = this._getCanvasJSON();
-
-        const thumbnail = this.canvas.toDataURL({
-            format: "png",
-            multiplier: 0.2,
-        });
-
-        const result = await this.orm.call(
-            "whiteboard.board",
-            "save_my_board",
-            [
-                this.state.boardId,
-                dataJson,
-                thumbnail,
-                this.state.boardName,
-                this.state.boardRevision,
-            ]
-        );
-
-        if (result?.error) {
-            this.notification.add(result.error, {
-                type: result.conflict
-                    ? "warning"
-                    : "danger",
-            });
-
-            // Keep dirty=true. The user must reload or resolve the
-            // conflict instead of silently overwriting newer data.
-            return;
+    async _saveBoard({ manual = false } = {}) {
+        if (
+            !this.canvas
+            || !this.state.boardId
+            || this.state.saving
+            || !this.state.dirty
+        ) {
+            return false;
         }
 
-        if (result?.board) {
-            this.state.boardId = result.board.id;
+        if (
+            !manual
+            && this._autosaveBlockedReason
+        ) {
+            return false;
+        }
 
-            this.state.boardName = (
-                result.board.name
-                || this.state.boardName
+        this._cancelAutosave();
+
+        /*
+         * Capture exactly what this request is saving.
+         *
+         * The user may continue drawing or typing while the request is
+         * in progress. The version counters tell us whether newer local
+         * changes exist when the response arrives.
+         */
+        const saveSnapshot = {
+            boardId: this.state.boardId,
+            boardRevision: this.state.boardRevision,
+            boardName: this.state.boardName,
+            canvasChangeVersion:
+                this._canvasChangeVersion,
+            nameChangeVersion:
+                this._nameChangeVersion,
+            dataJson: this._getCanvasJSON(),
+        };
+
+        let nextAutosaveDelay = (
+            AUTOSAVE_DEBOUNCE_MS
+        );
+
+        this.state.saving = true;
+
+        try {
+            const thumbnail = this.canvas.toDataURL({
+                format: "png",
+                multiplier: 0.2,
+            });
+
+            const result = await this.orm.call(
+                "whiteboard.board",
+                "save_my_board",
+                [
+                    saveSnapshot.boardId,
+                    saveSnapshot.dataJson,
+                    thumbnail,
+                    saveSnapshot.boardName,
+                    saveSnapshot.boardRevision,
+                ]
             );
+
+            if (result?.error) {
+                /*
+                 * Do not automatically repeat a conflict or validation
+                 * failure with the same invalid/stale content.
+                 */
+                this._autosaveBlockedReason = (
+                    result.conflict
+                        ? "conflict"
+                        : "validation"
+                );
+
+                this.notification.add(
+                    result.error,
+                    {
+                        type: result.conflict
+                            ? "warning"
+                            : "danger",
+                    }
+                );
+
+                return false;
+            }
+
+            if (!result?.board) {
+                this._autosaveBlockedReason = (
+                    "validation"
+                );
+
+                this.notification.add(
+                    "The whiteboard save returned an invalid response.",
+                    {
+                        type: "danger",
+                    }
+                );
+
+                return false;
+            }
+
+            this.state.boardId = result.board.id;
 
             if (
                 Number.isInteger(
@@ -1471,37 +1666,118 @@ export class WhiteboardAction extends Component {
                     result.board.revision
                 );
             }
+
+            const savedName = (
+                result.board.name
+                || saveSnapshot.boardName
+                || this._savedBoardName
+                || "Untitled Board"
+            );
+
+            this._savedBoardName = savedName;
+
+            /*
+             * Clear canvas dirty state only when no canvas edit occurred
+             * after this request captured its JSON.
+             */
+            if (
+                this._canvasChangeVersion
+                === saveSnapshot.canvasChangeVersion
+            ) {
+                this._canvasDirty = false;
+            }
+
+            /*
+             * Do not overwrite text typed into the name field while the
+             * request was in progress.
+             */
+            if (
+                this._nameChangeVersion
+                === saveSnapshot.nameChangeVersion
+            ) {
+                this.state.boardName = savedName;
+                this._nameDirty = false;
+            } else {
+                this._nameDirty = (
+                    this.state.boardName
+                    !== savedName
+                );
+            }
+
+            this._autosaveBlockedReason = null;
+            this._autosaveFailureNotified = false;
+
+            this._syncDirtyState();
+
+            /*
+             * Once everything represented by the counters has been
+             * saved, reset them to keep the values small.
+             */
+            if (!this.state.dirty) {
+                this._canvasChangeVersion = 0;
+                this._nameChangeVersion = 0;
+            }
+
+            await this._loadBoardsList();
+
+            /*
+             * Autosave succeeds silently. A manual save keeps the
+             * existing explicit success feedback.
+             */
+            if (manual) {
+                this.notification.add(
+                    "Whiteboard saved.",
+                    {
+                        type: "success",
+                    }
+                );
+            }
+
+            return true;
+        } catch {
+            /*
+             * Network and transport errors remain retryable.
+             * Dirty state is intentionally preserved.
+             */
+            nextAutosaveDelay = (
+                AUTOSAVE_RETRY_MS
+            );
+
+            if (
+                manual
+                || !this._autosaveFailureNotified
+            ) {
+                this.notification.add(
+                    manual
+                        ? "Could not save whiteboard. Changes remain unsaved."
+                        : "Autosave failed. Changes remain unsaved; retrying automatically.",
+                    {
+                        type: "danger",
+                    }
+                );
+            }
+
+            this._autosaveFailureNotified = true;
+
+            return false;
+        } finally {
+            this.state.saving = false;
+
+            /*
+             * This also handles edits made while the request was in
+             * progress. If newer changes remain dirty, start another
+             * debounce cycle using the new server revision.
+             */
+            if (
+                this.state.dirty
+                && !this._autosaveBlockedReason
+            ) {
+                this._scheduleAutosave(
+                    nextAutosaveDelay
+                );
+            }
         }
-
-        /*
-        * Clear dirty state only after the server confirms that the save
-        * succeeded. Validation errors, conflicts, and network failures
-        * return earlier or enter catch, so their dirty state is preserved.
-        */
-        this._resetDirtyState(
-            this.state.boardName
-        );
-
-        await this._loadBoardsList();
-
-        this.notification.add(
-            "Whiteboard saved.",
-            {
-                type: "success",
-            }
-        );
-    } catch {
-        // Dirty state remains true when the request fails.
-        this.notification.add(
-            "Could not save whiteboard.",
-            {
-                type: "danger",
-            }
-        );
-    } finally {
-        this.state.saving = false;
     }
-}
 
     // -------------------------------------------------------------------------
     // History helpers
