@@ -139,6 +139,7 @@
                                         <i class="fa fa-tag o_wb_input_icon"/>
                                         <input class="o_wb_input"
                                                placeholder="Board name"
+                                               maxlength="120"
                                                t-att-value="state.boardName"
                                                t-on-input="onBoardNameInput"
                                                t-att-disabled="state.loading or state.saving"/>

@@ -28,6 +28,7 @@ NORMALIZED_THUMBNAIL_JPEG_QUALITIES = (
 )
 
 MAX_BOARDS_PER_USER = 100
+MAX_BOARD_NAME_LENGTH = 120
 
 DEFAULT_BOARD_PAGE_SIZE = 25
 MAX_BOARD_LIST_RESULTS = 50
@@ -143,11 +144,17 @@ class WhiteboardBoard(models.Model):
         for vals in vals_list:
             vals = dict(vals)
 
-            # Ownership and concurrency metadata are always controlled
-            # by the server, never by RPC or imported values.
+            # Ownership, company, and concurrency metadata are always
+            # controlled by the server, never by RPC or imported values.
             vals["user_id"] = self.env.uid
+            vals["company_id"] = self.env.company.id
             vals["revision"] = 0
-            vals.setdefault("company_id", self.env.company.id)
+
+            if "name" in vals:
+                vals["name"] = self._validated_board_name(
+                    vals["name"],
+                    default=_("Untitled Board"),
+                )
 
             if "data_json" in vals:
                 vals["data_json"] = self._validated_data_json(
@@ -176,6 +183,7 @@ class WhiteboardBoard(models.Model):
 
         # These fields are always server-controlled.
         vals.pop("user_id", None)
+        vals.pop("company_id", None)
         vals.pop("revision", None)
 
         saved_content_fields = {
@@ -190,6 +198,11 @@ class WhiteboardBoard(models.Model):
         if changes_saved_content:
             self.check_access_rights("write")
             self.check_access_rule("write")
+
+        if "name" in vals:
+            vals["name"] = self._validated_board_name(
+                vals["name"]
+            )
 
         if "data_json" in vals:
             vals["data_json"] = self._validated_data_json(
@@ -252,6 +265,74 @@ class WhiteboardBoard(models.Model):
     # -------------------------------------------------------------------------
 
     @api.model
+    def _validate_board_name(
+            self,
+            name,
+            default=None,
+    ):
+        """
+        Validate and normalize an untrusted whiteboard name.
+
+        Internal whitespace is collapsed so newlines, tabs, and repeated
+        spaces cannot create malformed selector entries.
+        """
+        if name is None or name is False:
+            if default is not None:
+                return True, default
+
+            return (
+                False,
+                _("Whiteboard name is required."),
+            )
+
+        if not isinstance(name, str):
+            return (
+                False,
+                _("Whiteboard name must be text."),
+            )
+
+        clean_name = " ".join(
+            name.split()
+        )
+
+        if not clean_name:
+            if default is not None:
+                return True, default
+
+            return (
+                False,
+                _("Whiteboard name is required."),
+            )
+
+        if len(clean_name) > MAX_BOARD_NAME_LENGTH:
+            return (
+                False,
+                _(
+                    "Whiteboard name cannot exceed "
+                    "%s characters."
+                )
+                % MAX_BOARD_NAME_LENGTH,
+            )
+
+        return True, clean_name
+
+    @api.model
+    def _validated_board_name(
+            self,
+            name,
+            default=None,
+    ):
+        valid, result = self._validate_board_name(
+            name,
+            default=default,
+        )
+
+        if not valid:
+            raise ValidationError(result)
+
+        return result
+
+    @api.model
     def _check_board_creation_quota(self, requested_count):
         if not requested_count:
             return
@@ -280,17 +361,70 @@ class WhiteboardBoard(models.Model):
                 % MAX_BOARDS_PER_USER
             )
 
+    @api.model
+    def _normalize_board_id(self, board_id):
+        """
+        Accept only positive integer IDs or decimal integer strings.
+
+        Do not use int() directly on arbitrary values because:
+        - True becomes 1
+        - 1.5 becomes 1
+        """
+        if isinstance(board_id, bool):
+            return False
+
+        if isinstance(board_id, int):
+            normalized_id = board_id
+
+        elif isinstance(board_id, str):
+            clean_id = board_id.strip()
+
+            if not re.fullmatch(
+                    r"[1-9][0-9]*",
+                    clean_id,
+            ):
+                return False
+
+            try:
+                normalized_id = int(clean_id)
+            except (TypeError, ValueError):
+                return False
+
+        else:
+            return False
+
+        if normalized_id <= 0:
+            return False
+
+        return normalized_id
+
     def _get_current_user_board(self, board_id):
-        try:
-            board_id = int(board_id)
-        except (TypeError, ValueError):
+        normalized_board_id = (
+            self._normalize_board_id(
+                board_id
+            )
+        )
+
+        if not normalized_board_id:
             return self.browse()
 
         return self.search(
             [
-                ("id", "=", board_id),
-                ("user_id", "=", self.env.uid),
-                ("active", "=", True),
+                (
+                    "id",
+                    "=",
+                    normalized_board_id,
+                ),
+                (
+                    "user_id",
+                    "=",
+                    self.env.uid,
+                ),
+                (
+                    "active",
+                    "=",
+                    True,
+                ),
             ],
             limit=1,
         )
@@ -1020,8 +1154,22 @@ class WhiteboardBoard(models.Model):
         """
         Create a new board for the current user.
         """
-        clean_name = (name or "").strip() or _("Untitled Board")
-        board = self.create({"name": clean_name})
+        name_ok, name_result = (
+            self._validate_board_name(
+                name,
+                default=_("Untitled Board"),
+            )
+        )
+
+        if not name_ok:
+            return {
+                "error": name_result,
+            }
+
+        board = self.create({
+            "name": name_result,
+        })
+
         return self._board_payload(board)
 
     @api.model
@@ -1105,6 +1253,18 @@ class WhiteboardBoard(models.Model):
                 "error": revision_result,
             }
 
+        name_ok, name_result = (
+            self._validate_board_name(
+                name,
+                default=board.name,
+            )
+        )
+
+        if not name_ok:
+            return {
+                "error": name_result,
+            }
+
         json_ok, json_result = self._validate_data_json(
             data_json
         )
@@ -1180,14 +1340,10 @@ class WhiteboardBoard(models.Model):
             }
 
         vals = {
+            "name": name_result,
             "data_json": json_result,
             "revision": current_revision + 1,
         }
-
-        clean_name = (name or "").strip()
-
-        if clean_name:
-            vals["name"] = clean_name
 
         if thumb_result:
             vals["thumbnail"] = thumb_result

@@ -127,12 +127,17 @@ class TestWhiteboardAccessControl(TransactionCase):
 
     def test_get_board_data_denies_invalid_ids(self):
         for invalid_id in (
-            None,
-            False,
-            0,
-            -1,
-            "not-an-id",
-            2_147_483_647,
+                None,
+                False,
+                True,
+                0,
+                -1,
+                1.5,
+                "1.5",
+                "not-an-id",
+                [],
+                {},
+                2_147_483_647,
         ):
             with self.subTest(board_id=invalid_id):
                 result = self.BoardA.get_board_data(invalid_id)
@@ -172,12 +177,17 @@ class TestWhiteboardAccessControl(TransactionCase):
 
     def test_save_rpc_denies_invalid_board_ids(self):
         for invalid_id in (
-            None,
-            False,
-            0,
-            -1,
-            "not-an-id",
-            2_147_483_647,
+                None,
+                False,
+                True,
+                0,
+                -1,
+                1.5,
+                "1.5",
+                "not-an-id",
+                [],
+                {},
+                2_147_483_647,
         ):
             with self.subTest(board_id=invalid_id):
                 result = self.BoardA.save_my_board(
@@ -319,4 +329,45 @@ class TestWhiteboardAccessControl(TransactionCase):
 
         self.assertFalse(
             result["current_board"],
+        )
+
+    def test_client_provided_company_is_ignored_on_create_and_write(self):
+        other_company = self.env[
+            "res.company"
+        ].create({
+            "name": "Whiteboard Other Company",
+            "currency_id": (
+                self.env.company.currency_id.id
+            ),
+        })
+
+        board = self.BoardA.create({
+            "name": "Company protected board",
+            "company_id": other_company.id,
+        })
+
+        self.assertEqual(
+            board.company_id.id,
+            self.user_a.company_id.id,
+        )
+
+        original_revision = board.revision
+
+        board.write({
+            "company_id": other_company.id,
+        })
+
+        board.invalidate_recordset([
+            "company_id",
+            "revision",
+        ])
+
+        self.assertEqual(
+            board.company_id.id,
+            self.user_a.company_id.id,
+        )
+
+        self.assertEqual(
+            board.revision,
+            original_revision,
         )

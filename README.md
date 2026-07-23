@@ -67,8 +67,9 @@ python odoo-bin -c "C:\odoo\debian\odoo.conf" -d odoo_whiteboard -u odoo_v16_whi
 ## Resource limits
 
 | Resource                    |     Limit |
-| --------------------------- | --------: |
+|-----------------------------| --------: |
 | Boards per user             |       100 |
+| Board name                  | 120 characters |        
 | Backend canvas JSON         |     2 MiB |
 | Backend Fabric objects      |     1,000 |
 | Client Fabric objects       |       800 |

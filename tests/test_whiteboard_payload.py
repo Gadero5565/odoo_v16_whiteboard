@@ -9,6 +9,7 @@ from odoo.tests.common import TransactionCase
 
 from ..models import models as whiteboard_models
 from ..models.models import (
+    MAX_BOARD_NAME_LENGTH,
     MAX_CANVAS_OBJECTS,
     MAX_JSON_BYTES,
     MAX_PATH_COMMANDS,
@@ -817,4 +818,217 @@ class TestWhiteboardPayloadValidation(TransactionCase):
         self.assertLessEqual(
             len(stored_bytes),
             NORMALIZED_THUMBNAIL_MAX_BYTES,
+        )
+
+    def test_board_name_is_normalized_on_direct_orm(self):
+        board = self.Board.create({
+            "name": "  Project \n  Plan\t ",
+        })
+
+        self.assertEqual(
+            board.name,
+            "Project Plan",
+        )
+
+        board.write({
+            "name": "  Updated\t Board  ",
+        })
+
+        board.invalidate_recordset([
+            "name",
+        ])
+
+        self.assertEqual(
+            board.name,
+            "Updated Board",
+        )
+
+    def test_board_name_length_limit_is_enforced_on_direct_orm(self):
+        too_long_name = (
+                "x"
+                * (MAX_BOARD_NAME_LENGTH + 1)
+        )
+
+        with self.assertRaises(
+                ValidationError
+        ):
+            self.Board.create({
+                "name": too_long_name,
+            })
+
+        board = self.Board.create({
+            "name": "Valid name",
+        })
+
+        with self.assertRaises(
+                ValidationError
+        ):
+            board.write({
+                "name": too_long_name,
+            })
+
+        board.invalidate_recordset([
+            "name",
+            "revision",
+        ])
+
+        self.assertEqual(
+            board.name,
+            "Valid name",
+        )
+
+        self.assertEqual(
+            board.revision,
+            0,
+        )
+
+    def test_create_board_validates_and_normalizes_name(self):
+        normalized = self.Board.create_board(
+            "  Release \n Board  "
+        )
+
+        self.assertNotIn(
+            "error",
+            normalized,
+        )
+
+        self.assertEqual(
+            normalized["name"],
+            "Release Board",
+        )
+
+        blank = self.Board.create_board(
+            " \n\t "
+        )
+
+        self.assertNotIn(
+            "error",
+            blank,
+        )
+
+        self.assertEqual(
+            blank["name"],
+            "Untitled Board",
+        )
+
+        for invalid_name in (
+                123,
+                [],
+                {},
+        ):
+            with self.subTest(
+                    name=invalid_name
+            ):
+                result = self.Board.create_board(
+                    invalid_name
+                )
+
+                self.assertIn(
+                    "error",
+                    result,
+                )
+
+    def test_save_rpc_rejects_invalid_name_without_write(self):
+        board = self.Board.create({
+            "name": "Protected name",
+            "data_json": '{"objects":[]}',
+        })
+
+        original_data = board.data_json
+
+        invalid_names = (
+            123,
+            [],
+            {},
+            (
+                    "x"
+                    * (MAX_BOARD_NAME_LENGTH + 1)
+            ),
+        )
+
+        for invalid_name in invalid_names:
+            with self.subTest(
+                    name=invalid_name
+            ):
+                result = self.Board.save_my_board(
+                    board.id,
+                    (
+                        '{"objects":['
+                        '{"type":"rect","fill":"white"}'
+                        ']}'
+                    ),
+                    None,
+                    invalid_name,
+                    0,
+                )
+
+                self.assertIn(
+                    "error",
+                    result,
+                )
+
+        board.invalidate_recordset([
+            "name",
+            "data_json",
+            "revision",
+        ])
+
+        self.assertEqual(
+            board.name,
+            "Protected name",
+        )
+
+        self.assertEqual(
+            board.data_json,
+            original_data,
+        )
+
+        self.assertEqual(
+            board.revision,
+            0,
+        )
+
+    def test_save_rpc_normalizes_and_preserves_name(self):
+        board = self.Board.create({
+            "name": "Original name",
+            "data_json": '{"objects":[]}',
+        })
+
+        renamed = self.Board.save_my_board(
+            board.id,
+            '{"objects":[]}',
+            None,
+            "  Updated \n Name  ",
+            0,
+        )
+
+        self.assertTrue(
+            renamed["ok"]
+        )
+
+        self.assertEqual(
+            renamed["board"]["name"],
+            "Updated Name",
+        )
+
+        preserved = self.Board.save_my_board(
+            board.id,
+            '{"objects":[]}',
+            None,
+            " \n\t ",
+            1,
+        )
+
+        self.assertTrue(
+            preserved["ok"]
+        )
+
+        self.assertEqual(
+            preserved["board"]["name"],
+            "Updated Name",
+        )
+
+        self.assertEqual(
+            preserved["board"]["revision"],
+            2,
         )
