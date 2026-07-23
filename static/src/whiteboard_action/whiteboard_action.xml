@@ -4,18 +4,28 @@
         <div class="o_whiteboard_action">
             <div t-attf-class="o_whiteboard_layout #{state.sidebarOpen ? 'is-sidebar-open' : 'is-sidebar-closed'}">
 
-                <!-- SideBar Animation -->
+                <!-- Sidebar toggle -->
                 <button type="button"
                         t-attf-class="o_whiteboard_sidebar_handle #{state.sidebarOpen ? 'is-open' : ''}"
                         t-on-click="toggleSidebar"
                         t-att-title="state.sidebarOpen ? 'Hide tools' : 'Show tools'"
-                        t-att-aria-expanded="state.sidebarOpen ? 'true' : 'false'">
+                        t-att-aria-expanded="state.sidebarOpen ? 'true' : 'false'"
+                        aria-controls="whiteboard-tools-panel">
                     <i t-attf-class="fa #{state.sidebarOpen ? 'fa-chevron-left' : 'fa-sliders'}"/>
                     <span t-if="!state.sidebarOpen">Tools</span>
                 </button>
 
+                <!-- Mobile backdrop -->
+                <button t-if="state.sidebarOpen"
+                        type="button"
+                        class="o_whiteboard_sidebar_backdrop"
+                        t-on-click="closeSidebar"
+                        title="Close tools"
+                        aria-label="Close tools"/>
+
                 <!-- Left sidebar -->
-                <aside t-attf-class="o_whiteboard_sidebar #{state.sidebarOpen ? 'is-open' : ''}"
+                <aside id="whiteboard-tools-panel"
+                       t-attf-class="o_whiteboard_sidebar #{state.sidebarOpen ? 'is-open' : ''}"
                        aria-label="Whiteboard controls">
                     <div class="o_whiteboard_sidebar_header">
                         <div class="o_wb_brand">

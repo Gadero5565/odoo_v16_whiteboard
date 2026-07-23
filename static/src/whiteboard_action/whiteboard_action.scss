@@ -65,8 +65,13 @@
 .o_whiteboard_canvas_area {
   position: relative;
   flex: 1;
+  min-width: 0;
   min-height: 0;
+
   overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+
   padding: 0;
 }
 
@@ -255,6 +260,16 @@
   font-size: 11px;
   line-height: 1.35;
   opacity: 0.9;
+}
+.o_whiteboard_sidebar_backdrop {
+  display: none;
+
+  margin: 0;
+  padding: 0;
+
+  border: 0;
+  background: transparent;
+  appearance: none;
 }
 /* -------------------------------------------------------------------------
  * Sidebar
@@ -696,8 +711,8 @@
 }
 
 /* -------------------------------------------------------------------------
- * Responsive
- * ------------------------------------------------------------------------- */
+* Responsive
+* ------------------------------------------------------------------------- */
 
 @media (max-width: 1200px) {
   .o_whiteboard_action {
@@ -705,68 +720,297 @@
   }
 
   .o_wb_button_grid_icons {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(
+      4,
+      minmax(0, 1fr)
+    );
   }
 }
 
+/*
+* Tablet layout:
+* Keep the left drawer but reduce surrounding spacing.
+*/
 @media (max-width: 992px) {
   .o_whiteboard_action {
     --wb-sidebar-width: 280px;
   }
 
   .o_whiteboard_layout {
-    padding: 14px;
-  }
-
-  .o_whiteboard_sidebar {
-    top: 14px;
-    left: 14px;
-    bottom: 14px;
-  }
-
-  .o_whiteboard_sidebar_handle {
-    left: 14px;
-  }
-
-  .o_whiteboard_sidebar_handle.is-open {
-    left: calc(14px + var(--wb-sidebar-width) - 1px);
-  }
-
-  .o_whiteboard_stage {
-    min-width: 980px;
-    min-height: 640px;
-  }
-}
-
-@media (max-width: 768px) {
-  .o_whiteboard_layout {
-    gap: 14px;
     padding: 12px;
   }
 
-  .o_whiteboard_sidebar_header {
-    padding: 16px 16px 12px;
+  .o_whiteboard_sidebar {
+    top: 12px;
+    left: 12px;
+    bottom: 12px;
   }
 
-  .o_whiteboard_sidebar_scroll {
-    padding: 14px;
+  .o_whiteboard_sidebar_handle {
+    left: 12px;
   }
 
-  .o_wb_button_grid_icons {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+  .o_whiteboard_sidebar_handle.is-open {
+    left: calc(
+      12px
+      + var(--wb-sidebar-width)
+      - 1px
+    );
   }
 
   .o_whiteboard_stage {
     min-width: 900px;
-    min-height: 560px;
+    min-height: 620px;
+  }
+}
+
+/*
+* Mobile layout:
+* Convert the left drawer into a bottom sheet.
+*/
+@media (max-width: 768px) {
+  .o_whiteboard_action {
+    --wb-sidebar-width: auto;
+  }
+
+  .o_whiteboard_layout {
+    padding: 8px;
+  }
+
+  .o_whiteboard_sidebar_backdrop {
+    position: absolute;
+    z-index: 15;
+    inset: 0;
+
+    display: block;
+
+    width: 100%;
+    height: 100%;
+
+    border: 0;
+    cursor: pointer;
+    background: rgba(15, 23, 42, 0.32);
+  }
+
+  .o_whiteboard_sidebar {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+
+    width: auto;
+    min-width: 0;
+    max-height: 74vh;
+
+    border-radius: 18px;
+
+    transform: translateY(
+      calc(100% + 24px)
+    );
+
+    opacity: 0;
+    pointer-events: none;
+
+    transition:
+      transform 220ms ease,
+      opacity 160ms ease;
+  }
+
+  .o_whiteboard_sidebar.is-open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .o_whiteboard_sidebar_handle {
+    top: auto;
+    right: auto;
+    bottom: 14px;
+    left: 50%;
+
+    min-width: 104px;
+    min-height: 44px;
+    padding: 0 16px;
+
+    border-radius: 999px;
+
+    transform: translateX(-50%);
+  }
+
+  .o_whiteboard_sidebar_handle:hover {
+    transform: translateX(-50%);
+  }
+
+  .o_whiteboard_sidebar_handle.is-open {
+    display: none;
+  }
+
+  .o_whiteboard_sidebar_header {
+    flex: 0 0 auto;
+
+    padding: 12px 14px 10px;
+
+    border-bottom: 1px solid var(--wb-border);
+  }
+
+  .o_whiteboard_sidebar_scroll {
+    padding: 12px 14px 16px;
+  }
+
+  .o_wb_brand_subtitle {
+    display: none;
+  }
+
+  .o_wb_sidebar_close {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /*
+   * Touch-friendly controls.
+   */
+  .o_wb_button,
+  .o_wb_icon_button {
+    min-height: 44px;
+  }
+
+  .o_wb_input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .o_wb_input_wrap {
+    min-height: 44px;
+  }
+
+  .o_wb_style_inline {
+    min-height: 46px;
+  }
+
+  .o_wb_color_input {
+    width: 32px;
+    height: 32px;
+  }
+
+  .o_wb_button_grid_two {
+    grid-template-columns: repeat(
+      2,
+      minmax(0, 1fr)
+    );
+  }
+
+  .o_wb_button_grid_icons {
+    grid-template-columns: repeat(
+      4,
+      minmax(0, 1fr)
+    );
+  }
+
+  .o_whiteboard_loading {
+    top: 8px;
+    left: 8px;
+
+    max-width: calc(100% - 16px);
+  }
+
+  /*
+   * Preserve a scrollable whiteboard coordinate space.
+   */
+  .o_whiteboard_stage {
+    min-width: 760px;
+    min-height: 540px;
+
+    border-radius: 14px;
+  }
+
+  .o_whiteboard_canvas {
+    border-radius: 13px;
   }
 }
 
 @media (max-width: 480px) {
-  .o_whiteboard_action {
-    --wb-sidebar-width: min(292px, calc(100vw - 48px));
+  .o_whiteboard_layout {
+    padding: 6px;
   }
 
+  .o_whiteboard_sidebar {
+    right: 6px;
+    bottom: 6px;
+    left: 6px;
+
+    max-height: 78vh;
+    border-radius: 16px;
+  }
+
+  .o_whiteboard_sidebar_header {
+    padding: 10px 12px 8px;
+  }
+
+  .o_whiteboard_sidebar_scroll {
+    padding: 10px 12px 14px;
+  }
+
+  .o_wb_brand_icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .o_wb_brand_title {
+    font-size: 14px;
+  }
+
+  .o_whiteboard_save_status {
+    min-height: 22px;
+    padding: 0 7px;
+
+    font-size: 10px;
+  }
+
+  .o_wb_button_grid_icons {
+    grid-template-columns: repeat(
+      4,
+      minmax(0, 1fr)
+    );
+  }
+
+  .o_wb_button_grid_two {
+    grid-template-columns: repeat(
+      2,
+      minmax(0, 1fr)
+    );
+  }
+
+  .o_wb_button_full_span {
+    grid-column: 1 / -1;
+  }
+
+  .o_wb_button {
+    padding-right: 8px;
+    padding-left: 8px;
+
+    font-size: 12px;
+  }
+
+  .o_wb_panel_section {
+    padding: 10px;
+  }
+
+  .o_wb_section_title {
+    font-size: 11px;
+  }
+
+  .o_whiteboard_stage {
+    min-width: 680px;
+    min-height: 500px;
+  }
+}
+
+/*
+* Very narrow devices.
+*/
+@media (max-width: 360px) {
   .o_wb_button_grid_two {
     grid-template-columns: 1fr;
   }
@@ -776,12 +1020,25 @@
   }
 
   .o_wb_button_grid_icons {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(
+      3,
+      minmax(0, 1fr)
+    );
   }
 
   .o_whiteboard_stage {
-    min-width: 820px;
-    min-height: 520px;
+    min-width: 620px;
   }
 }
 
+/*
+* Avoid animation for users who request reduced motion.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .o_whiteboard_sidebar,
+  .o_whiteboard_sidebar_handle,
+  .o_whiteboard_save_status,
+  .o_wb_button {
+    transition: none !important;
+  }
+}
