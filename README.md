@@ -1,7 +1,13 @@
 # OWL Whiteboard for Odoo 16
 
 A secure multi-board whiteboard implemented as an OWL client action and powered by a locally bundled Fabric.js build.
+## Version
 
+Current release: `16.0.1.0.0`
+
+## License
+
+This module is licensed under the LGPL-3 license.
 ## Features
 
 - Freehand drawing
@@ -66,19 +72,19 @@ python odoo-bin -c "C:\odoo\debian\odoo.conf" -d odoo_whiteboard -u odoo_v16_whi
 
 ## Resource limits
 
-| Resource                    |     Limit |
-|-----------------------------| --------: |
-| Boards per user             |       100 |
-| Board name                  | 120 characters |        
-| Backend canvas JSON         |     2 MiB |
-| Backend Fabric objects      |     1,000 |
-| Client Fabric objects       |       800 |
-| Client canvas JSON          |   1.5 MiB |
-| Undo/redo entries           |        50 |
-| Undo/redo memory            |    12 MiB |
+| Resource | Limit |
+|---|---:|
+| Boards per user | 100 |
+| Board name | 120 characters |
+| Backend canvas JSON | 2 MiB |
+| Backend Fabric objects | 1,000 |
+| Client Fabric objects | 800 |
+| Client canvas JSON | 1.5 MiB |
+| Undo/redo entries | 50 |
+| Undo/redo memory | 12 MiB |
 | Stored thumbnail dimensions | 480 × 320 |
-| Stored thumbnail size       |   160 KiB |
-| Board-list page size        |        25 |
+| Stored thumbnail size | 160 KiB |
+| Board-list page size | 25 |
 
 ## Keyboard shortcuts
 
@@ -97,7 +103,7 @@ Shortcuts are suppressed while editing HTML inputs or Fabric text.
 Run:
 
 ```powershell
-python odoo-bin -c "C:\odoo\debian\odoo.conf" -d odoo_whiteboard -u odoo_v16_whiteboard --test-enable --stop-after-init --log-level=test
+python odoo-bin -c "<path-to-odoo.conf>" -d "<database>" -u odoo_v16_whiteboard --test-enable --stop-after-init --log-level=test
 ```
 
 Current expected result:
