@@ -108,6 +108,10 @@ export class WhiteboardAction extends Component {
         this._historyTimer = null;
         this._limitRollbackInProgress = false;
 
+        this._eraserPointerDown = false;
+        this._eraserChanged = false;
+        this._eraserRemovedObjects = new Set();
+
         this._resizeCanvas = this._resizeCanvas.bind(this);
 
         this._beforeUnload = (ev) => {
@@ -247,6 +251,8 @@ export class WhiteboardAction extends Component {
             } catch {
                 // ignored
             }
+
+            this._finishEraserStroke();
         });
 
         this.canvas.isDrawingMode = true;
@@ -289,11 +295,28 @@ export class WhiteboardAction extends Component {
         this.canvas.on("text:changed", () => this._pushHistoryDebounced());
 
         this.canvas.on("mouse:dblclick", (ev) => {
+            if (this.state.mode === "eraser") {
+                return;
+            }
+
             this._editNodeFromTarget(ev.target);
         });
 
         this.canvas.on("mouse:down", (ev) => {
+            if (this.state.mode === "eraser") {
+                this._startEraserStroke(ev);
+                return;
+            }
+
             this._handleConnectorMouseDown(ev);
+        });
+
+        this.canvas.on("mouse:move", (ev) => {
+            this._continueEraserStroke(ev);
+        });
+
+        this.canvas.on("mouse:up", () => {
+            this._finishEraserStroke();
         });
 
         this._resetHistoryFromCanvas();
@@ -327,15 +350,16 @@ export class WhiteboardAction extends Component {
         const fabric = window.fabric;
         if (!this.canvas || !fabric) return;
 
-        const brush = new fabric.PencilBrush(this.canvas);
-        brush.width = Number(this.state.width) || 4;
+        const brush = new fabric.PencilBrush(
+            this.canvas
+        );
 
-        /*
-         * MVP eraser:
-         * This draws white over content. It is not object-level erasing.
-         * A true eraser can be added later with object/path deletion behavior.
-         */
-        brush.color = this.state.mode === "eraser" ? "#ffffff" : this.state.color;
+        brush.width = (
+            Number(this.state.width)
+            || 4
+        );
+
+        brush.color = this.state.color;
 
         this.canvas.freeDrawingBrush = brush;
     }
@@ -605,6 +629,177 @@ export class WhiteboardAction extends Component {
     }
 
     // -------------------------------------------------------------------------
+    // Object/path eraser
+    // -------------------------------------------------------------------------
+
+    _startEraserStroke(ev) {
+        if (
+            !this.canvas
+            || this.state.mode !== "eraser"
+        ) {
+            return;
+        }
+
+        this._eraserPointerDown = true;
+        this._eraserChanged = false;
+        this._eraserRemovedObjects.clear();
+
+        this.canvas.discardActiveObject();
+
+        this._eraseTargetFromEvent(ev);
+    }
+
+    _continueEraserStroke(ev) {
+        if (
+            !this.canvas
+            || this.state.mode !== "eraser"
+            || !this._eraserPointerDown
+        ) {
+            return;
+        }
+
+        this._eraseTargetFromEvent(ev);
+    }
+
+    _finishEraserStroke() {
+        const changed = this._eraserChanged;
+
+        this._eraserPointerDown = false;
+        this._eraserChanged = false;
+        this._eraserRemovedObjects.clear();
+
+        if (
+            changed
+            && this.canvas
+        ) {
+            /*
+             * All objects removed during one pointer gesture become one
+             * undo/redo history operation.
+             */
+            this._pushHistory();
+        }
+    }
+
+    _getEraserTargetFromEvent(ev) {
+        if (!this.canvas) {
+            return null;
+        }
+
+        let target = ev?.target || null;
+
+        /*
+         * Fabric does not always populate ev.target during a drag after
+         * the object beneath the pointer has just been removed.
+         */
+        if (
+            !target
+            && ev?.e
+            && typeof this.canvas.findTarget === "function"
+        ) {
+            try {
+                target = this.canvas.findTarget(
+                    ev.e,
+                    false
+                );
+            } catch {
+                target = null;
+            }
+        }
+
+        return this._getTopLevelCanvasObject(
+            target
+        );
+    }
+
+    _getTopLevelCanvasObject(target) {
+        if (
+            !target
+            || !this.canvas
+        ) {
+            return null;
+        }
+
+        let object = target;
+
+        /*
+         * A click may target text or a shape inside a Fabric group.
+         * The eraser removes the complete whiteboard node/group.
+         */
+        while (
+            object.group
+            && object.group.type !== "activeSelection"
+        ) {
+            object = object.group;
+        }
+
+        if (
+            object.type === "activeSelection"
+        ) {
+            return null;
+        }
+
+        if (
+            !this.canvas
+                .getObjects()
+                .includes(object)
+        ) {
+            return null;
+        }
+
+        return object;
+    }
+
+    _eraseTargetFromEvent(ev) {
+        if (!this.canvas) {
+            return false;
+        }
+
+        const target = (
+            this._getEraserTargetFromEvent(ev)
+        );
+
+        if (
+            !target
+            || this._eraserRemovedObjects.has(target)
+        ) {
+            return false;
+        }
+
+        const objectsToRemove = (
+            this._getObjectsToRemoveWithConnectors(
+                [target]
+            )
+        ).filter((object) => {
+            return this.canvas
+                .getObjects()
+                .includes(object);
+        });
+
+        if (!objectsToRemove.length) {
+            return false;
+        }
+
+        this._runWithoutHistory(() => {
+            this.canvas.discardActiveObject();
+
+            for (const object of objectsToRemove) {
+                this._eraserRemovedObjects.add(
+                    object
+                );
+
+                this.canvas.remove(object);
+            }
+        });
+
+        this.state.connectorFromNodeId = null;
+        this._eraserChanged = true;
+
+        this.canvas.requestRenderAll();
+
+        return true;
+    }
+
+    // -------------------------------------------------------------------------
     // UI handlers
     // -------------------------------------------------------------------------
 
@@ -616,55 +811,90 @@ export class WhiteboardAction extends Component {
     }
 
     setWidth(ev) {
-        this.state.width = parseInt(ev.target.value || "4", 10);
-        this._applyBrush();
+        this.state.width = parseInt(
+            ev.target.value || "4",
+            10
+        );
+
+        if (this.state.mode === "pen") {
+            this._applyBrush();
+        }
     }
 
     setSelect() {
         if (!this.canvas) return;
+
+        this._finishEraserStroke();
 
         this.state.mode = "select";
         this.state.connectorFromNodeId = null;
 
         this.canvas.isDrawingMode = false;
         this.canvas.selection = true;
+        this.canvas.skipTargetFind = false;
+
         this.canvas.defaultCursor = "default";
+        this.canvas.hoverCursor = "move";
+
+        this.canvas.requestRenderAll();
     }
 
     setPen() {
         if (!this.canvas) return;
 
+        this._finishEraserStroke();
+
         this.state.mode = "pen";
         this.state.connectorFromNodeId = null;
 
-        this.canvas.isDrawingMode = true;
+        this.canvas.discardActiveObject();
         this.canvas.selection = false;
+        this.canvas.skipTargetFind = true;
+        this.canvas.isDrawingMode = true;
+
+        this.canvas.defaultCursor = "crosshair";
+        this.canvas.hoverCursor = "crosshair";
+
         this._applyBrush();
+        this.canvas.requestRenderAll();
     }
 
     setEraser() {
         if (!this.canvas) return;
 
+        this._finishEraserStroke();
+
         this.state.mode = "eraser";
         this.state.connectorFromNodeId = null;
 
-        this.canvas.isDrawingMode = true;
+        /*
+         * The eraser performs object hit-testing instead of drawing a
+         * white path.
+         */
+        this.canvas.isDrawingMode = false;
         this.canvas.selection = false;
-        this._applyBrush();
+        this.canvas.skipTargetFind = false;
+
+        this.canvas.discardActiveObject();
+
+        this.canvas.defaultCursor = "crosshair";
+        this.canvas.hoverCursor = "crosshair";
+
+        this.canvas.requestRenderAll();
     }
 
     setConnectorMode() {
         if (!this.canvas) return;
-
+        this._finishEraserStroke();
         this.state.mode = "connector";
         this.state.connectorFromNodeId = null;
-
         this.canvas.isDrawingMode = false;
         this.canvas.selection = false;
+        this.canvas.skipTargetFind = false;
         this.canvas.discardActiveObject();
         this.canvas.defaultCursor = "crosshair";
+        this.canvas.hoverCursor = "crosshair";
         this.canvas.requestRenderAll();
-
         this.notification.add("Connector mode: click a source object, then a target object.", {
             type: "info",
         });
@@ -673,12 +903,14 @@ export class WhiteboardAction extends Component {
     addText() {
         const fabric = window.fabric;
         if (!fabric || !this.canvas) return;
+        this._finishEraserStroke();
 
         this.state.mode = "text";
         this.state.connectorFromNodeId = null;
 
         this.canvas.isDrawingMode = false;
         this.canvas.selection = true;
+        this.canvas.skipTargetFind = false;
         this.canvas.defaultCursor = "text";
 
         const point = this._getInsertPoint();

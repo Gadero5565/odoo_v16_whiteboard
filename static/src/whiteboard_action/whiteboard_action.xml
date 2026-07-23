@@ -229,7 +229,7 @@
                                 <button type="button"
                                         t-attf-class="o_wb_button o_wb_button_tool #{state.mode === 'eraser' ? 'is-active' : ''}"
                                         t-on-click="setEraser"
-                                        t-att-title="'Eraser'">
+                                        t-att-title="'Erase whole objects and paths'">
                                     <i class="fa fa-eraser"/>
                                     <span>Eraser</span>
                                 </button>
@@ -241,6 +241,11 @@
                                     <i class="fa fa-font"/>
                                     <span>Text</span>
                                 </button>
+                            </div>
+                            <div t-if="state.mode === 'eraser'"
+                                 class="o_wb_hint">
+                                Click or drag across objects and paths to remove them.
+                                One drag can be undone as one action.
                             </div>
                         </section>
 
