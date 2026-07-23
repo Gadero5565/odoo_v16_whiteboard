@@ -59,6 +59,8 @@ export class WhiteboardAction extends Component {
             boardName: "My Whiteboard",
             boardRevision: null,
             dirty: false,
+            canUndo: false,
+            canRedo: false,
 
             saveStatus: "saved",
             saveStatusText: "Saved",
@@ -148,20 +150,128 @@ export class WhiteboardAction extends Component {
         });
 
         this._handleKeyDown = (ev) => {
-            const targetTag = ev.target?.tagName?.toLowerCase();
-            const isTypingInHtmlInput = ["input", "textarea", "select"].includes(targetTag);
-
-            if (isTypingInHtmlInput || ev.target?.isContentEditable) {
+            if (
+                this.state.loading
+                || this._isKeyboardEditingTarget(ev.target)
+                || this._isCanvasTextEditing()
+            ) {
                 return;
             }
 
-            const activeObject = this.canvas?.getActiveObject();
+            const key = String(
+                ev.key || ""
+            ).toLowerCase();
 
-            if (!activeObject || activeObject.isEditing) {
+            const primaryModifier = (
+                ev.ctrlKey
+                || ev.metaKey
+            );
+
+            /*
+             * Ctrl/Cmd + S
+             */
+            if (
+                primaryModifier
+                && !ev.altKey
+                && key === "s"
+            ) {
+                ev.preventDefault();
+
+                if (
+                    this.state.dirty
+                    && !this.state.saving
+                ) {
+                    void this.save();
+                }
+
                 return;
             }
 
-            if (ev.key === "Delete" || ev.key === "Backspace") {
+            /*
+             * Ctrl/Cmd + Z
+             * Ctrl/Cmd + Shift + Z
+             */
+            if (
+                primaryModifier
+                && !ev.altKey
+                && key === "z"
+            ) {
+                ev.preventDefault();
+
+                if (ev.shiftKey) {
+                    this.redo();
+                } else {
+                    this.undo();
+                }
+
+                return;
+            }
+
+            /*
+             * Ctrl/Cmd + Y
+             */
+            if (
+                primaryModifier
+                && !ev.altKey
+                && key === "y"
+            ) {
+                ev.preventDefault();
+                this.redo();
+                return;
+            }
+
+            /*
+             * Escape:
+             * 1. Leave a drawing/connector/eraser mode.
+             * 2. Clear the current selection.
+             * 3. Close the tools panel.
+             */
+            if (key === "escape") {
+                const activeObject = (
+                    this.canvas?.getActiveObject()
+                );
+
+                if (
+                    this.state.mode !== "select"
+                    || this.state.connectorFromNodeId
+                ) {
+                    ev.preventDefault();
+                    this.setSelect();
+                    return;
+                }
+
+                if (activeObject) {
+                    ev.preventDefault();
+
+                    this.canvas.discardActiveObject();
+                    this.canvas.requestRenderAll();
+
+                    return;
+                }
+
+                if (this.state.sidebarOpen) {
+                    ev.preventDefault();
+                    this.closeSidebar();
+                }
+
+                return;
+            }
+
+            /*
+             * Delete or Backspace removes selected objects.
+             */
+            if (
+                key === "delete"
+                || key === "backspace"
+            ) {
+                const activeObject = (
+                    this.canvas?.getActiveObject()
+                );
+
+                if (!activeObject) {
+                    return;
+                }
+
                 ev.preventDefault();
                 this.deleteSelectedObjects();
             }
@@ -200,6 +310,59 @@ export class WhiteboardAction extends Component {
                 this.canvas.dispose();
             }
         });
+    }
+
+    _isKeyboardEditingTarget(target) {
+        if (!target) {
+            return false;
+        }
+
+        const tagName = (
+            target.tagName
+            ?.toLowerCase()
+        );
+
+        if (
+            ["input", "textarea", "select"]
+                .includes(tagName)
+        ) {
+            return true;
+        }
+
+        if (target.isContentEditable) {
+            return true;
+        }
+
+        if (
+            typeof target.closest === "function"
+            && target.closest(
+                '[contenteditable="true"]'
+            )
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    _isCanvasTextEditing() {
+        const activeObject = (
+            this.canvas?.getActiveObject()
+        );
+
+        return Boolean(
+            activeObject?.isEditing
+        );
+    }
+
+    _syncHistoryAvailability() {
+        this.state.canUndo = (
+            this.undoStack.length > 1
+        );
+
+        this.state.canRedo = (
+            this.redoStack.length > 0
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -960,48 +1123,126 @@ export class WhiteboardAction extends Component {
     }
 
     undo() {
-        if (!this.canvas) {
+        if (
+            !this.canvas
+            || this._isApplyingHistory
+        ) {
             return;
         }
 
         this._flushDebouncedHistory();
 
         if (this.undoStack.length <= 1) {
+            this._syncHistoryAvailability();
             return;
         }
 
         const current = this.undoStack.pop();
-        this.redoStack.push(current);
 
-        const previous = this.undoStack[this.undoStack.length - 1];
+        this.redoStack.push(
+            current
+        );
 
-        this._applyJSON(previous.json).then((ok) => {
+        const previous = (
+            this.undoStack[
+                this.undoStack.length - 1
+            ]
+        );
+
+        this._syncHistoryAvailability();
+
+        void this._applyJSON(
+            previous.json
+        ).then((ok) => {
             if (ok) {
-                this._updateCanvasUsage(this._getPreviousHistoryStats(previous));
+                this._updateCanvasUsage(
+                    this._getPreviousHistoryStats(
+                        previous
+                    )
+                );
+
                 this._markCanvasDirty();
+                this._syncHistoryAvailability();
+
+                return;
             }
+
+            /*
+             * Restore the history stacks if Fabric could not apply the
+             * previous state.
+             */
+            this.redoStack.pop();
+            this.undoStack.push(
+                current
+            );
+
+            this._syncHistoryAvailability();
+
+            this.notification.add(
+                "Could not undo the last action.",
+                {
+                    type: "danger",
+                }
+            );
         });
     }
 
     redo() {
-        if (!this.canvas) {
+        if (
+            !this.canvas
+            || this._isApplyingHistory
+        ) {
             return;
         }
 
         this._flushDebouncedHistory();
 
         if (!this.redoStack.length) {
+            this._syncHistoryAvailability();
             return;
         }
 
         const next = this.redoStack.pop();
-        this.undoStack.push(next);
 
-        this._applyJSON(next.json).then((ok) => {
+        this.undoStack.push(
+            next
+        );
+
+        this._syncHistoryAvailability();
+
+        void this._applyJSON(
+            next.json
+        ).then((ok) => {
             if (ok) {
-                this._updateCanvasUsage(this._getPreviousHistoryStats(next));
+                this._updateCanvasUsage(
+                    this._getPreviousHistoryStats(
+                        next
+                    )
+                );
+
                 this._markCanvasDirty();
+                this._syncHistoryAvailability();
+
+                return;
             }
+
+            /*
+             * Restore the history stacks if Fabric could not apply the
+             * redo state.
+             */
+            this.undoStack.pop();
+            this.redoStack.push(
+                next
+            );
+
+            this._syncHistoryAvailability();
+
+            this.notification.add(
+                "Could not redo the last action.",
+                {
+                    type: "danger",
+                }
+            );
         });
     }
 
@@ -2405,7 +2646,14 @@ export class WhiteboardAction extends Component {
         const latest = this.undoStack[this.undoStack.length - 1];
 
         if (latest?.json === json) {
-            this._updateCanvasUsage(this._getPreviousHistoryStats(latest));
+            this._updateCanvasUsage(
+                this._getPreviousHistoryStats(
+                    latest
+                )
+            );
+
+            this._syncHistoryAvailability();
+
             return true;
         }
 
@@ -2433,6 +2681,7 @@ export class WhiteboardAction extends Component {
         }
 
         this._trimHistoryToBudget();
+        this._syncHistoryAvailability();
         this._updateCanvasUsage(stats);
 
         if (markDirty) {
@@ -2474,6 +2723,8 @@ export class WhiteboardAction extends Component {
         });
 
         this._canvasDirty = false;
+
+        this._syncHistoryAvailability();
         this._syncDirtyState();
     }
 

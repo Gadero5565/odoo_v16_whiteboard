@@ -210,6 +210,53 @@
     line-height: 1;
   }
 }
+.o_wb_shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  margin-top: 10px;
+  padding: 9px 10px;
+
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius);
+  background: var(--wb-surface-soft);
+}
+
+.o_wb_shortcut_row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  color: var(--wb-muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.o_wb_shortcut_row kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-height: 22px;
+  padding: 0 6px;
+
+  border: 1px solid var(--wb-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--wb-surface);
+
+  color: var(--wb-text);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.o_whiteboard_stage:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.24);
+  outline-offset: 3px;
+}
 .o_wb_hint {
   padding: 9px 10px;
 
@@ -664,6 +711,60 @@
 }
 
 /* -------------------------------------------------------------------------
+* Empty board
+* ------------------------------------------------------------------------- */
+
+.o_whiteboard_empty_state {
+  position: absolute;
+  z-index: 5;
+  top: 50%;
+  left: 50%;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+
+  width: calc(100% - 40px);
+  max-width: 360px;
+  padding: 22px;
+
+  border: 1px dashed var(--wb-blue-border);
+  border-radius: var(--wb-radius-lg);
+  background: rgba(255, 255, 255, 0.9);
+
+  color: var(--wb-muted);
+  text-align: center;
+  line-height: 1.4;
+
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.o_whiteboard_empty_state strong {
+  color: var(--wb-text);
+  font-size: 15px;
+}
+
+.o_whiteboard_empty_state > span:last-child {
+  font-size: 13px;
+}
+
+.o_whiteboard_empty_icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 44px;
+  height: 44px;
+
+  border-radius: 14px;
+  background: var(--wb-blue-soft);
+  color: var(--wb-blue);
+  font-size: 18px;
+}
+
+/* -------------------------------------------------------------------------
  * Loading
  * ------------------------------------------------------------------------- */
 
@@ -1041,4 +1142,110 @@
   .o_wb_button {
     transition: none !important;
   }
+}
+/* -------------------------------------------------------------------------
+* RTL
+* ------------------------------------------------------------------------- */
+
+@media (min-width: 769px) {
+  [dir="rtl"] .o_whiteboard_sidebar {
+    right: 18px;
+    left: auto;
+
+    transform: translateX(
+      calc(100% + 24px)
+    );
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar.is-open {
+    transform: translateX(0);
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle {
+    right: 18px;
+    left: auto;
+
+    border-radius: 999px 0 0 999px;
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle.is-open {
+    right: calc(
+      18px
+      + var(--wb-sidebar-width)
+      - 1px
+    );
+    left: auto;
+
+    border-radius: 999px 0 0 999px;
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle.is-open i {
+    transform: scaleX(-1);
+  }
+
+  [dir="rtl"] .o_whiteboard_loading {
+    right: 14px;
+    left: auto;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 992px) {
+  [dir="rtl"] .o_whiteboard_sidebar {
+    right: 12px;
+    left: auto;
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle {
+    right: 12px;
+    left: auto;
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle.is-open {
+    right: calc(
+      12px
+      + var(--wb-sidebar-width)
+      - 1px
+    );
+    left: auto;
+  }
+}
+
+@media (max-width: 768px) {
+  [dir="rtl"] .o_whiteboard_sidebar {
+    right: 8px;
+    left: 8px;
+
+    transform: translateY(
+      calc(100% + 24px)
+    );
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar.is-open {
+    transform: translateY(0);
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle {
+    right: auto;
+    left: 50%;
+
+    border-radius: 999px;
+    transform: translateX(-50%);
+  }
+
+  [dir="rtl"] .o_whiteboard_sidebar_handle:hover {
+    transform: translateX(-50%);
+  }
+
+  [dir="rtl"] .o_whiteboard_loading {
+    right: 8px;
+    left: auto;
+  }
+}
+
+[dir="rtl"] .o_wb_style_value {
+  text-align: left;
+}
+
+[dir="rtl"] .o_wb_shortcut_row kbd {
+  direction: ltr;
 }

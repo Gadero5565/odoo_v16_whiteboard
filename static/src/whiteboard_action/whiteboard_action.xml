@@ -223,7 +223,8 @@
                                 <button type="button"
                                         t-attf-class="o_wb_button o_wb_button_tool #{state.mode === 'select' ? 'is-active' : ''}"
                                         t-on-click="setSelect"
-                                        t-att-title="'Select / move objects'">
+                                        t-att-title="'Select / move objects'"
+                                        t-att-aria-pressed="state.mode === 'select' ? 'true' : 'false'">
                                     <i class="fa fa-mouse-pointer"/>
                                     <span>Select</span>
                                 </button>
@@ -231,7 +232,8 @@
                                 <button type="button"
                                         t-attf-class="o_wb_button o_wb_button_tool #{state.mode === 'pen' ? 'is-active' : ''}"
                                         t-on-click="setPen"
-                                        t-att-title="'Pen'">
+                                        t-att-title="'Pen'"
+                                        t-att-aria-pressed="state.mode === 'pen' ? 'true' : 'false'">
                                     <i class="fa fa-pencil"/>
                                     <span>Pen</span>
                                 </button>
@@ -239,7 +241,8 @@
                                 <button type="button"
                                         t-attf-class="o_wb_button o_wb_button_tool #{state.mode === 'eraser' ? 'is-active' : ''}"
                                         t-on-click="setEraser"
-                                        t-att-title="'Erase whole objects and paths'">
+                                        t-att-title="'Erase whole objects and paths'"
+                                        t-att-aria-pressed="state.mode === 'eraser' ? 'true' : 'false'">
                                     <i class="fa fa-eraser"/>
                                     <span>Eraser</span>
                                 </button>
@@ -247,7 +250,8 @@
                                 <button type="button"
                                         t-attf-class="o_wb_button o_wb_button_tool #{state.mode === 'text' ? 'is-active' : ''}"
                                         t-on-click="addText"
-                                        t-att-title="'Add text'">
+                                        t-att-title="'Add text'"
+                                        t-att-aria-pressed="state.mode === 'text' ? 'true' : 'false'">
                                     <i class="fa fa-font"/>
                                     <span>Text</span>
                                 </button>
@@ -318,6 +322,7 @@
                                 <button type="button"
                                         t-attf-class="o_wb_button o_wb_button_tool o_wb_button_full #{state.mode === 'connector' ? 'is-active' : ''}"
                                         t-on-click="setConnectorMode"
+                                        t-att-aria-pressed="state.mode === 'connector' ? 'true' : 'false'"
                                         t-att-title="'Connect two objects'">
                                     <i class="fa fa-link"/>
                                     <span>Connector</span>
@@ -426,7 +431,9 @@
                                 <button type="button"
                                         class="o_wb_button o_wb_button_tool"
                                         t-on-click="undo"
-                                        t-att-title="'Undo'">
+                                        t-att-disabled="state.loading or !state.canUndo"
+                                        t-att-title="state.canUndo ? 'Undo' : 'Nothing to undo'"
+                                        aria-keyshortcuts="Control+Z Meta+Z">
                                     <i class="fa fa-undo"/>
                                     <span>Undo</span>
                                 </button>
@@ -434,7 +441,9 @@
                                 <button type="button"
                                         class="o_wb_button o_wb_button_tool"
                                         t-on-click="redo"
-                                        t-att-title="'Redo'">
+                                        t-att-disabled="state.loading or !state.canRedo"
+                                        t-att-title="state.canRedo ? 'Redo' : 'Nothing to redo'"
+                                        aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y Meta+Y">
                                     <i class="fa fa-repeat"/>
                                     <span>Redo</span>
                                 </button>
@@ -442,7 +451,8 @@
                                 <button type="button"
                                         class="o_wb_button o_wb_button_tool o_wb_button_danger"
                                         t-on-click="deleteSelectedObjects"
-                                        t-att-title="'Remove selected object'">
+                                        t-att-title="'Remove selected object'"
+                                        aria-keyshortcuts="Delete Backspace">
                                     <i class="fa fa-trash-o"/>
                                     <span>Remove</span>
                                 </button>
@@ -459,7 +469,8 @@
                                         class="o_wb_button o_wb_button_primary"
                                         t-on-click="save"
                                         t-att-disabled="state.loading or state.saving or !state.dirty"
-                                        t-att-title="state.dirty ? 'Save changes' : 'All changes saved'">
+                                        t-att-title="state.dirty ? 'Save changes' : 'All changes saved'"
+                                        aria-keyshortcuts="Control+S Meta+S">
                                     <i t-if="state.saving"
                                        class="fa fa-spinner fa-spin"/>
 
@@ -489,6 +500,33 @@
                                     <i class="fa fa-download"/>
                                     <span>Export</span>
                                 </button>
+                            </div>
+                            <div class="o_wb_shortcuts"
+                                 aria-label="Keyboard shortcuts">
+                                <div class="o_wb_shortcut_row">
+                                    <span>Save</span>
+                                    <kbd>Ctrl/⌘ S</kbd>
+                                </div>
+
+                                <div class="o_wb_shortcut_row">
+                                    <span>Undo</span>
+                                    <kbd>Ctrl/⌘ Z</kbd>
+                                </div>
+
+                                <div class="o_wb_shortcut_row">
+                                    <span>Redo</span>
+                                    <kbd>Ctrl/⌘ ⇧ Z</kbd>
+                                </div>
+
+                                <div class="o_wb_shortcut_row">
+                                    <span>Remove</span>
+                                    <kbd>Delete</kbd>
+                                </div>
+
+                                <div class="o_wb_shortcut_row">
+                                    <span>Cancel mode</span>
+                                    <kbd>Esc</kbd>
+                                </div>
                             </div>
                         </section>
 
@@ -545,7 +583,28 @@
                             </div>
                         </t>
 
-                        <div class="o_whiteboard_stage" t-ref="wrap">
+                        <t t-if="!state.loading">
+                            <div t-if="state.canvasObjectCount === 0"
+                                 class="o_whiteboard_empty_state"
+                                 role="status">
+                                <span class="o_whiteboard_empty_icon">
+                                    <i class="fa fa-pencil-square-o"/>
+                                </span>
+
+                                <strong>Empty whiteboard</strong>
+
+                                <span>
+                                    Open Tools to draw, add a shape, or insert a template.
+                                </span>
+                            </div>
+                        </t>
+
+                        <div class="o_whiteboard_stage"
+                                     t-ref="wrap"
+                                     role="region"
+                                     tabindex="0"
+                                     aria-label="Interactive whiteboard canvas"
+                                     aria-keyshortcuts="Escape Delete Backspace">
                             <canvas t-ref="canvas" class="o_whiteboard_canvas"/>
                         </div>
                     </div>
