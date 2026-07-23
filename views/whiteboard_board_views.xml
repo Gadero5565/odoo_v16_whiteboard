@@ -38,7 +38,7 @@
     </record>
 
     <record id="action_whiteboard_board" model="ir.actions.act_window">
-        <field name="name">Saved Board Record</field>
+        <field name="name">My Boards</field>
         <field name="res_model">whiteboard.board</field>
         <field name="view_mode">tree,form</field>
         <field name="domain">[('user_id', '=', uid), ('active', '=', True)]</field>

@@ -28,8 +28,25 @@
                             </div>
                         </div>
 
-                        <span t-if="state.dirty" class="o_whiteboard_dirty">
-                            Unsaved
+                        <span t-if="!state.loading"
+                              t-attf-class="o_whiteboard_save_status is-#{state.saveStatus}"
+                              role="status"
+                              aria-live="polite">
+                            <i t-if="state.saveStatus === 'saved'"
+                               class="fa fa-check-circle"/>
+
+                            <i t-if="state.saveStatus === 'unsaved'"
+                               class="fa fa-circle-o"/>
+
+                            <i t-if="state.saveStatus === 'saving'"
+                               class="fa fa-spinner fa-spin"/>
+
+                            <i t-if="state.saveStatus === 'error'"
+                               class="fa fa-exclamation-circle"/>
+
+                            <span>
+                                <t t-esc="state.saveStatusText"/>
+                            </span>
                         </span>
 
                         <button type="button"
@@ -426,11 +443,28 @@
                                 <button type="button"
                                         class="o_wb_button o_wb_button_primary"
                                         t-on-click="save"
-                                        t-att-disabled="state.loading or state.saving"
-                                        t-att-title="'Save'">
-                                    <i class="fa fa-cloud-upload"/>
-                                    <t t-if="state.saving">Saving…</t>
-                                    <t t-else="">Save</t>
+                                        t-att-disabled="state.loading or state.saving or !state.dirty"
+                                        t-att-title="state.dirty ? 'Save changes' : 'All changes saved'">
+                                    <i t-if="state.saving"
+                                       class="fa fa-spinner fa-spin"/>
+
+                                    <i t-elif="!state.dirty"
+                                       class="fa fa-check"/>
+
+                                    <i t-else=""
+                                       class="fa fa-cloud-upload"/>
+
+                                    <span t-if="state.saving">
+                                        Saving…
+                                    </span>
+
+                                    <span t-elif="!state.dirty">
+                                        Saved
+                                    </span>
+
+                                    <span t-else="">
+                                        Save
+                                    </span>
                                 </button>
 
                                 <button type="button"

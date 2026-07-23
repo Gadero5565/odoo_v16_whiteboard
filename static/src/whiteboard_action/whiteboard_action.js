@@ -60,6 +60,9 @@ export class WhiteboardAction extends Component {
             boardRevision: null,
             dirty: false,
 
+            saveStatus: "saved",
+            saveStatusText: "Saved",
+
             canvasObjectCount: 0,
             canvasJsonBytes: 0,
             canvasUsageText: "",
@@ -445,15 +448,55 @@ export class WhiteboardAction extends Component {
         this.insertTemplate("project_workflow");
     }
 
+    _setSaveStatus(status, text = null) {
+        const defaultMessages = {
+            saved: "Saved",
+            unsaved: "Unsaved changes",
+            saving: "Saving…",
+            error: "Save failed",
+        };
+
+        this.state.saveStatus = status;
+
+        this.state.saveStatusText = (
+            text
+            || defaultMessages[status]
+            || "Saved"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Dirty-state and autosave helpers
     // -------------------------------------------------------------------------
 
     _syncDirtyState() {
-        this.state.dirty = this._canvasDirty || this._nameDirty;
+        this.state.dirty = (
+            this._canvasDirty
+            || this._nameDirty
+        );
 
         if (!this.state.dirty) {
             this._cancelAutosave();
+
+            if (
+                !this.state.saving
+                && this.state.boardId
+            ) {
+                this._setSaveStatus("saved");
+            }
+
+            return;
+        }
+
+        /*
+         * Preserve "Save failed" until the user makes another edit or
+         * retries the save.
+         */
+        if (
+            !this.state.saving
+            && this.state.saveStatus !== "error"
+        ) {
+            this._setSaveStatus("unsaved");
         }
     }
 
@@ -469,6 +512,7 @@ export class WhiteboardAction extends Component {
 
         this._clearRecoverableAutosaveBlock();
         this._syncDirtyState();
+        this._setSaveStatus("unsaved");
         this._scheduleAutosave();
     }
 
@@ -479,13 +523,19 @@ export class WhiteboardAction extends Component {
 
         this._canvasDirty = false;
         this._nameDirty = false;
+
         this._canvasChangeVersion = 0;
         this._nameChangeVersion = 0;
+
         this._autosaveBlockedReason = null;
         this._autosaveFailureNotified = false;
 
         this._cancelAutosave();
         this._syncDirtyState();
+
+        if (this.state.boardId) {
+            this._setSaveStatus("saved");
+        }
     }
 
     onBoardNameInput(ev) {
@@ -499,10 +549,15 @@ export class WhiteboardAction extends Component {
             this._clearRecoverableAutosaveBlock();
         }
 
-        this._nameDirty = nextName !== this._savedBoardName;
+        this._nameDirty = (
+            nextName
+            !== this._savedBoardName
+        );
+
         this._syncDirtyState();
 
         if (this.state.dirty) {
+            this._setSaveStatus("unsaved");
             this._scheduleAutosave();
         }
     }
@@ -1639,7 +1694,12 @@ export class WhiteboardAction extends Component {
         }
 
         let nextAutosaveDelay = AUTOSAVE_DEBOUNCE_MS;
+
+        let saveSucceeded = false;
+        let saveFailed = false;
+
         this.state.saving = true;
+        this._setSaveStatus("saving");
 
         try {
             const thumbnail = this.canvas.toDataURL({
@@ -1661,20 +1721,37 @@ export class WhiteboardAction extends Component {
             );
 
             if (result?.error) {
-                this._autosaveBlockedReason = result.conflict ? "conflict" : "validation";
+                saveFailed = true;
 
-                this.notification.add(result.error, {
-                    type: result.conflict ? "warning" : "danger",
-                });
+                this._autosaveBlockedReason = (
+                    result.conflict
+                        ? "conflict"
+                        : "validation"
+                );
+
+                this.notification.add(
+                    result.error,
+                    {
+                        type: result.conflict
+                            ? "warning"
+                            : "danger",
+                    }
+                );
 
                 return false;
             }
 
             if (!result?.board) {
+                saveFailed = true;
                 this._autosaveBlockedReason = "validation";
-                this.notification.add("The whiteboard save returned an invalid response.", {
-                    type: "danger",
-                });
+
+                this.notification.add(
+                    "The whiteboard save returned an invalid response.",
+                    {
+                        type: "danger",
+                    }
+                );
+
                 return false;
             }
 
@@ -1715,20 +1792,39 @@ export class WhiteboardAction extends Component {
 
             await this._loadBoardsList();
 
+            saveSucceeded = true;
+
             if (manual) {
-                this.notification.add("Whiteboard saved.", { type: "success" });
+                this.notification.add(
+                    "Whiteboard saved.",
+                    {
+                        type: "success",
+                    }
+                );
             }
 
             return true;
         } catch {
+            saveFailed = true;
             nextAutosaveDelay = AUTOSAVE_RETRY_MS;
 
-            if (manual || !this._autosaveFailureNotified) {
+            if (
+                manual
+                || !this._autosaveFailureNotified
+            ) {
                 this.notification.add(
                     manual
-                        ? "Could not save whiteboard. Changes remain unsaved."
-                        : "Autosave failed. Changes remain unsaved; retrying automatically.",
-                    { type: "danger" }
+                        ? (
+                            "Could not save whiteboard. "
+                            + "Changes remain unsaved."
+                        )
+                        : (
+                            "Autosave failed. Changes remain unsaved; "
+                            + "retrying automatically."
+                        ),
+                    {
+                        type: "danger",
+                    }
                 );
             }
 
@@ -1737,8 +1833,30 @@ export class WhiteboardAction extends Component {
         } finally {
             this.state.saving = false;
 
-            if (this.state.dirty && !this._autosaveBlockedReason) {
-                this._scheduleAutosave(nextAutosaveDelay);
+            if (saveSucceeded) {
+                /*
+                 * The user may have edited the board while the request was
+                 * in flight. In that case the successful request saved the
+                 * earlier snapshot, not the newest edits.
+                 */
+                this._setSaveStatus(
+                    this.state.dirty
+                        ? "unsaved"
+                        : "saved"
+                );
+            } else if (saveFailed) {
+                this._setSaveStatus("error");
+            } else if (this.state.dirty) {
+                this._setSaveStatus("unsaved");
+            }
+
+            if (
+                this.state.dirty
+                && !this._autosaveBlockedReason
+            ) {
+                this._scheduleAutosave(
+                    nextAutosaveDelay
+                );
             }
         }
     }
