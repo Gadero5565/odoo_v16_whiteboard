@@ -1,13 +1,39 @@
 {
     "name": "OWL Whiteboard",
-    "version": "1.0.0",
+    "version": "16.0.1.0.0",
     "category": "Tools",
-    "summary": "Backend whiteboard (OWL client action) using CDN JS library (Fabric.js)",
-    "depends": ["web"],
+    "summary": (
+        "Secure multi-board OWL whiteboard "
+        "with bundled Fabric.js"
+    ),
+    "description": """
+OWL Whiteboard for Odoo 16
+==========================
+
+A multi-board interactive whiteboard built as an OWL client action.
+
+Main features
+-------------
+* Freehand drawing, text, shapes, arrows, and connectors
+* Mind-map and flowchart nodes and templates
+* Multi-board selector with paginated loading
+* Debounced autosave with optimistic concurrency protection
+* Dirty-state and navigation protection
+* Byte-bounded undo and redo history
+* Server-side JSON and thumbnail validation
+* Responsive desktop, tablet, mobile, and RTL layouts
+* Keyboard shortcuts and accessible status feedback
+
+Fabric.js is bundled locally in the module assets. The module does not
+depend on a third-party CDN at runtime.
+""",
+    "license": "LGPL-3",
+    "depends": [
+        "web",
+    ],
     "data": [
         "security/ir.model.access.csv",
         "security/whiteboard_rules.xml",
-
         "views/whiteboard_board_views.xml",
         "views/whiteboard_action.xml",
     ],
@@ -23,5 +49,5 @@
     },
     "application": True,
     "installable": True,
+    "auto_install": False,
 }
-
