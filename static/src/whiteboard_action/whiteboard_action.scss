@@ -711,6 +711,67 @@
 }
 
 /* -------------------------------------------------------------------------
+ * Fatal error
+ * ------------------------------------------------------------------------- */
+
+.o_whiteboard_fatal_error {
+  position: absolute;
+  z-index: 12;
+  top: 50%;
+  left: 50%;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+
+  width: calc(100% - 40px);
+  max-width: 420px;
+  padding: 24px;
+
+  border: 1px solid #fecaca;
+  border-radius: var(--wb-radius-lg);
+  background: var(--wb-surface);
+  box-shadow: var(--wb-shadow-sidebar);
+
+  color: var(--wb-muted);
+  text-align: center;
+  line-height: 1.4;
+
+  transform: translate(-50%, -50%);
+}
+
+.o_whiteboard_fatal_error strong {
+  color: var(--wb-text);
+  font-size: 16px;
+}
+
+.o_whiteboard_fatal_error > span:not(
+  .o_whiteboard_fatal_icon
+) {
+  font-size: 13px;
+}
+
+.o_whiteboard_fatal_icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 46px;
+  height: 46px;
+
+  border-radius: 14px;
+  background: var(--wb-danger-soft);
+  color: var(--wb-danger);
+  font-size: 19px;
+}
+
+.o_whiteboard_fatal_error .o_wb_button {
+  margin-top: 4px;
+}
+
+
+/* -------------------------------------------------------------------------
 * Empty board
 * ------------------------------------------------------------------------- */
 
@@ -1248,4 +1309,13 @@
 
 [dir="rtl"] .o_wb_shortcut_row kbd {
   direction: ltr;
+}
+[dir="rtl"] .o_whiteboard_fatal_error {
+  right: 50%;
+  left: auto;
+
+  transform: translate(
+    50%,
+    -50%
+  );
 }

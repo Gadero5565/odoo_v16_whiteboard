@@ -103,7 +103,7 @@ python odoo-bin -c "C:\odoo\debian\odoo.conf" -d odoo_whiteboard -u odoo_v16_whi
 Current expected result:
 
 ```text
-58 tests
+64 tests
 0 failures
 0 errors
 ```
@@ -119,3 +119,10 @@ Before releasing:
 5. Test save, autosave, conflict handling, erasing, undo/redo, and pagination.
 6. Test desktop, tablet, mobile, and RTL layouts.
 7. Test installation without internet access.
+
+## Failure-path behavior
+- Invalid or incompatible board JSON does not replace the currently open board.
+- Temporary board-list failures preserve the existing selector contents.
+- Thumbnail-generation failure does not prevent canvas JSON from being saved.
+- PNG export failures produce a visible error instead of an uncaught exception.
+- A missing Fabric.js asset displays a recoverable fatal-error screen.

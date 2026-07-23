@@ -584,7 +584,29 @@
                             </div>
                         </t>
 
-                        <t t-if="!state.loading">
+                        <div t-if="state.fatalError"
+                             class="o_whiteboard_fatal_error"
+                             role="alert">
+                            <span class="o_whiteboard_fatal_icon">
+                                <i class="fa fa-exclamation-triangle"/>
+                            </span>
+
+                            <strong>Whiteboard unavailable</strong>
+
+                            <span>
+                                <t t-esc="state.fatalError"/>
+                            </span>
+
+                            <button type="button"
+                                    class="o_wb_button o_wb_button_primary"
+                                    t-on-click="reloadPage">
+                                <i class="fa fa-refresh"/>
+                                <span>Reload page</span>
+                            </button>
+                        </div>
+
+
+                        <t t-if="!state.loading and !state.fatalError">
                             <div t-if="state.canvasObjectCount === 0"
                                  class="o_whiteboard_empty_state"
                                  role="status">

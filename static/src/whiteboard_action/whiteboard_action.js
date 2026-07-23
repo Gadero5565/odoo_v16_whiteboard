@@ -53,6 +53,7 @@ export class WhiteboardAction extends Component {
         this.state = useState({
             loading: true,
             loadingMessage: "Loading whiteboard…",
+            fatalError: "",
             saving: false,
 
             boardId: this.initialBoardId,
@@ -96,7 +97,7 @@ export class WhiteboardAction extends Component {
         this._autosaveTimer = null;
         this._autosaveBlockedReason = null;
         this._autosaveFailureNotified = false;
-
+        this._thumbnailFailureNotified = false;
         this.undoStack = [];
         this.redoStack = [];
 
@@ -284,12 +285,47 @@ export class WhiteboardAction extends Component {
         onMounted(async () => {
             try {
                 const ready = await this._initFabric();
-                if (ready) {
-                    await this._loadBoardFromServer(this.initialBoardId);
-                    this._resizeCanvas();
-                    window.addEventListener("resize", this._resizeCanvas);
-                    window.addEventListener("keydown", this._handleKeyDown);
+
+                if (!ready) {
+                    return;
                 }
+
+                const loaded = await this._loadBoardFromServer(
+                    this.initialBoardId
+                );
+
+                if (!loaded) {
+                    this.state.fatalError = (
+                        "The whiteboard could not be loaded. "
+                        + "Reload the page and try again."
+                    );
+
+                    return;
+                }
+
+                this._resizeCanvas();
+
+                window.addEventListener(
+                    "resize",
+                    this._resizeCanvas
+                );
+
+                window.addEventListener(
+                    "keydown",
+                    this._handleKeyDown
+                );
+            } catch {
+                this.state.fatalError = (
+                    "The whiteboard could not be initialized. "
+                    + "Reload the page and try again."
+                );
+
+                this.notification.add(
+                    "Could not initialize whiteboard.",
+                    {
+                        type: "danger",
+                    }
+                );
             } finally {
                 this.state.loading = false;
             }
@@ -373,9 +409,19 @@ export class WhiteboardAction extends Component {
         const fabric = window.fabric;
 
         if (!fabric) {
+            this.state.fatalError = (
+                "The whiteboard library could not be loaded. "
+                + "Verify the bundled Fabric.js asset and rebuild Odoo assets."
+            );
+
             this.notification.add(
-                "Fabric.js is not loaded. Add static/lib/fabric/fabric.min.js to web.assets_backend.",
-                { type: "danger" }
+                (
+                    "Fabric.js is not loaded. Verify "
+                    + "static/src/lib/fabric.min.js."
+                ),
+                {
+                    type: "danger",
+                }
             );
             return false;
         }
@@ -1247,20 +1293,62 @@ export class WhiteboardAction extends Component {
     }
 
     exportPNG() {
-        if (!this.canvas) return;
+        if (!this.canvas) {
+            return;
+        }
 
-        const url = this.canvas.toDataURL({ format: "png" });
+        try {
+            const url = this.canvas.toDataURL({
+                format: "png",
+            });
 
-        const safeName = (this.state.boardName || "whiteboard")
-            .replace(/[^\w\-]+/g, "_")
-            .replace(/^_+|_+$/g, "");
+            if (
+                typeof url !== "string"
+                || !url.startsWith(
+                    "data:image/png"
+                )
+            ) {
+                throw new Error(
+                    "Invalid PNG data URL"
+                );
+            }
 
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${safeName || "whiteboard"}.png`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+            const safeName = (
+                this.state.boardName
+                || "whiteboard"
+            )
+                .replace(
+                    /[^\w\-]+/g,
+                    "_"
+                )
+                .replace(
+                    /^_+|_+$/g,
+                    ""
+                );
+
+            const link = document.createElement(
+                "a"
+            );
+
+            link.href = url;
+            link.download = (
+                `${safeName || "whiteboard"}.png`
+            );
+
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        } catch {
+            this.notification.add(
+                (
+                    "Could not export the whiteboard "
+                    + "as a PNG image."
+                ),
+                {
+                    type: "danger",
+                }
+            );
+        }
     }
 
     async createBoard() {
@@ -1283,10 +1371,32 @@ export class WhiteboardAction extends Component {
                 return;
             }
 
-            await this._applyBoardPayload(result);
+            const applied = await this._applyBoardPayload(
+                result
+            );
+
             await this._loadBoardsList();
 
-            this.notification.add("New whiteboard created.", { type: "success" });
+            if (!applied) {
+                this.notification.add(
+                    (
+                        "The board was created, but it "
+                        + "could not be opened."
+                    ),
+                    {
+                        type: "warning",
+                    }
+                );
+
+                return;
+            }
+
+            this.notification.add(
+                "New whiteboard created.",
+                {
+                    type: "success",
+                }
+            );
         } catch {
             this.notification.add("Could not create whiteboard.", { type: "danger" });
         } finally {
@@ -1295,16 +1405,37 @@ export class WhiteboardAction extends Component {
     }
 
     async onSelectBoard(ev) {
-        const selectedBoardId = parseInt(ev.target.value, 10);
+        const selectedBoardId = parseInt(
+            ev.target.value,
+            10
+        );
 
-        if (!selectedBoardId || selectedBoardId === this.state.boardId) {
+        if (
+            !selectedBoardId
+            || selectedBoardId === this.state.boardId
+        ) {
             return;
         }
 
+        const previousBoardId = (
+            this.state.boardId
+        );
+
         if (this.state.dirty) {
-            const confirmed = window.confirm("You have unsaved changes. Switch boards and discard them?");
+            const confirmed = window.confirm(
+                (
+                    "You have unsaved changes. "
+                    + "Switch boards and discard them?"
+                )
+            );
+
             if (!confirmed) {
-                ev.target.value = this.state.boardId ? String(this.state.boardId) : "";
+                ev.target.value = (
+                    previousBoardId
+                        ? String(previousBoardId)
+                        : ""
+                );
+
                 return;
             }
         }
@@ -1312,7 +1443,17 @@ export class WhiteboardAction extends Component {
         this.state.loading = true;
 
         try {
-            await this._loadBoardFromServer(selectedBoardId);
+            const loaded = await this._loadBoardFromServer(
+                selectedBoardId
+            );
+
+            if (!loaded) {
+                ev.target.value = (
+                    previousBoardId
+                        ? String(previousBoardId)
+                        : ""
+                );
+            }
         } finally {
             this.state.loading = false;
         }
@@ -1979,6 +2120,12 @@ export class WhiteboardAction extends Component {
 
         this.state.boardsLoading = true;
 
+        const previousListState = {
+            boards: [...this.state.boards],
+            hasMore: this.state.boardsHasMore,
+            nextOffset: this.state.boardsNextOffset,
+        };
+
         const offset = append ? this.state.boardsNextOffset : 0;
 
         try {
@@ -1987,6 +2134,11 @@ export class WhiteboardAction extends Component {
                 "get_user_boards",
                 [offset, BOARD_LIST_PAGE_SIZE, this.state.boardId]
             );
+            if (!this._isValidBoardListPayload(result)) {
+                throw new Error(
+                    "Invalid whiteboard-list response"
+                );
+            }
 
             const pageBoards = Array.isArray(result?.boards) ? result.boards : [];
             const currentBoard = result?.current_board || null;
@@ -2013,15 +2165,21 @@ export class WhiteboardAction extends Component {
 
             return this.state.boards;
         } catch {
-            if (!append) {
-                this.state.boards = [];
-                this.state.boardsHasMore = false;
-                this.state.boardsNextOffset = 0;
-            }
+            /*
+             * Preserve the existing selector contents. A temporary list RPC
+             * failure must not make the currently open board disappear.
+             */
+            this.state.boards = previousListState.boards;
+            this.state.boardsHasMore = previousListState.hasMore;
+            this.state.boardsNextOffset = previousListState.nextOffset;
 
             this.notification.add(
-                append ? "Could not load more whiteboards." : "Could not load whiteboard list.",
-                { type: "danger" }
+                append
+                    ? "Could not load more whiteboards."
+                    : "Could not refresh the whiteboard list.",
+                {
+                    type: "danger",
+                }
             );
 
             return this.state.boards;
@@ -2057,48 +2215,107 @@ export class WhiteboardAction extends Component {
             }
 
             if (result?.error) {
-                this.notification.add(result.error, { type: "danger" });
+                this.notification.add(
+                    result.error,
+                    {
+                        type: "danger",
+                    }
+                );
+
                 return false;
             }
 
-            await this._applyBoardPayload(result);
+            if (!this._isValidBoardPayload(result)) {
+                this.notification.add(
+                    (
+                        "The server returned invalid "
+                        + "whiteboard data."
+                    ),
+                    {
+                        type: "danger",
+                    }
+                );
+
+                return false;
+            }
+
+            const applied = await this._applyBoardPayload(
+                result
+            );
+
+            if (!applied) {
+                return false;
+            }
+
             await this._loadBoardsList();
 
             return true;
         } catch {
-            this.notification.add("Could not load whiteboard.", { type: "danger" });
+            this.notification.add(
+                "Could not load whiteboard.",
+                {
+                    type: "danger",
+                }
+            );
+
             return false;
         }
     }
 
     async _applyBoardPayload(payload) {
-        if (!payload) {
+        if (
+            !this.canvas
+            || !this._isValidBoardPayload(payload)
+        ) {
             return false;
         }
 
         this._cancelAutosave();
-        this._autosaveBlockedReason = null;
-        this._autosaveFailureNotified = false;
 
-        const incomingCanvasStats = this._analyzeCanvasJSON(payload.data_json || "{}");
+        const previousCanvasJson = (
+            this._getCanvasJSON()
+        );
 
-        this.state.loadingMessage = this._isLargeBoard(incomingCanvasStats)
-            ? `Loading large whiteboard (${incomingCanvasStats.objects} objects)…`
-            : "Loading whiteboard…";
+        const previousAutosaveBlockedReason = (
+            this._autosaveBlockedReason
+        );
+
+        const previousAutosaveFailureNotified = (
+            this._autosaveFailureNotified
+        );
+
+        const incomingDataJson = (
+            typeof payload.data_json === "string"
+            && payload.data_json
+                ? payload.data_json
+                : "{}"
+        );
+
+        const incomingCanvasStats = (
+            this._analyzeCanvasJSON(
+                incomingDataJson
+            )
+        );
+
+        this.state.loadingMessage = (
+            this._isLargeBoard(
+                incomingCanvasStats
+            )
+                ? (
+                    "Loading large whiteboard "
+                    + `(${incomingCanvasStats.objects} objects)…`
+                )
+                : "Loading whiteboard…"
+        );
 
         await this._waitForRenderFrame();
-
-        this.state.boardId = payload.id;
-        this.state.boardName = payload.name || "Untitled Board";
-        this.state.boardRevision = Number.isInteger(payload.revision) ? payload.revision : 0;
-
-        this._savedBoardName = this.state.boardName;
-        this._nameDirty = false;
 
         let applied = true;
 
         if (payload.data_json) {
-            applied = await this._applyJSON(payload.data_json);
+            applied = await this._applyJSON(
+                payload.data_json
+            );
         } else {
             this._runWithoutHistory(() => {
                 this._clearCanvasObjects();
@@ -2106,20 +2323,158 @@ export class WhiteboardAction extends Component {
         }
 
         if (!applied) {
-            this.state.loadingMessage = "Loading whiteboard…";
+            /*
+             * Fabric may have partially changed the canvas before rejecting
+             * malformed or incompatible JSON. Restore the previous canvas.
+             */
+            const restored = await this._applyJSON(
+                previousCanvasJson,
+                {
+                    notify: false,
+                }
+            );
+
+            this._autosaveBlockedReason = (
+                previousAutosaveBlockedReason
+            );
+
+            this._autosaveFailureNotified = (
+                previousAutosaveFailureNotified
+            );
+
+            this.state.loadingMessage = (
+                "Loading whiteboard…"
+            );
+
+            if (!restored) {
+                this.state.fatalError = (
+                    "The previous whiteboard could not be restored. "
+                    + "Reload the page before continuing."
+                );
+
+                this.notification.add(
+                    (
+                        "The previous whiteboard could "
+                        + "not be restored."
+                    ),
+                    {
+                        type: "danger",
+                    }
+                );
+            } else if (
+                this.state.dirty
+                && !this._autosaveBlockedReason
+            ) {
+                this._scheduleAutosave();
+            }
+
             return false;
         }
+
+        /*
+         * Change the active board metadata only after the incoming canvas
+         * has loaded successfully.
+         */
+        this.state.boardId = payload.id;
+        this.state.boardName = (
+            payload.name
+            || "Untitled Board"
+        );
+
+        this.state.boardRevision = (
+            payload.revision
+        );
+
+        this._savedBoardName = (
+            this.state.boardName
+        );
+
+        this._nameDirty = false;
+        this._autosaveBlockedReason = null;
+        this._autosaveFailureNotified = false;
+        this.state.fatalError = "";
 
         this._runWithoutHistory(() => {
             this._updateAllConnectors();
         });
 
         this._resetHistoryFromCanvas();
-        this._resetDirtyState(this.state.boardName);
+
+        this._resetDirtyState(
+            this.state.boardName
+        );
+
         this._resizeCanvas();
 
-        this.state.loadingMessage = "Loading whiteboard…";
+        this.state.loadingMessage = (
+            "Loading whiteboard…"
+        );
+
         return true;
+    }
+
+    reloadPage() {
+        window.location.reload();
+    }
+
+    _isValidBoardPayload(payload) {
+        return Boolean(
+            payload
+            && Number.isInteger(payload.id)
+            && payload.id > 0
+            && typeof payload.name === "string"
+            && Number.isInteger(payload.revision)
+            && payload.revision >= 0
+            && (
+                payload.data_json === false
+                || payload.data_json === null
+                || typeof payload.data_json === "string"
+            )
+        );
+    }
+
+    _isValidBoardListPayload(payload) {
+        return Boolean(
+            payload
+            && Array.isArray(payload.boards)
+            && Number.isInteger(payload.next_offset)
+            && payload.next_offset >= 0
+            && typeof payload.has_more === "boolean"
+        );
+    }
+
+    _createSaveThumbnail() {
+        if (!this.canvas) {
+            return null;
+        }
+
+        try {
+            const thumbnail = this.canvas.toDataURL({
+                format: "jpeg",
+                quality: THUMBNAIL_JPEG_QUALITY,
+                multiplier: THUMBNAIL_MULTIPLIER,
+            });
+
+            this._thumbnailFailureNotified = false;
+
+            return thumbnail;
+        } catch {
+            if (!this._thumbnailFailureNotified) {
+                this.notification.add(
+                    (
+                        "The board preview could not be generated. "
+                        + "The whiteboard content will still be saved."
+                    ),
+                    {
+                        type: "warning",
+                    }
+                );
+            }
+
+            this._thumbnailFailureNotified = true;
+
+            return null;
+        }
     }
 
     async save() {
@@ -2175,11 +2530,9 @@ export class WhiteboardAction extends Component {
         this._setSaveStatus("saving");
 
         try {
-            const thumbnail = this.canvas.toDataURL({
-                format: "jpeg",
-                quality: THUMBNAIL_JPEG_QUALITY,
-                multiplier: THUMBNAIL_MULTIPLIER,
-            });
+            const thumbnail = (
+                this._createSaveThumbnail()
+            );
 
             const result = await this.orm.call(
                 "whiteboard.board",
@@ -2752,8 +3105,15 @@ export class WhiteboardAction extends Component {
         this.canvas.requestRenderAll();
     }
 
-    async _applyJSON(json) {
-        if (!this.canvas) return false;
+    async _applyJSON(
+        json,
+        {
+            notify = true,
+        } = {}
+    ) {
+        if (!this.canvas) {
+            return false;
+        }
 
         let parsed = json;
 
@@ -2762,23 +3122,54 @@ export class WhiteboardAction extends Component {
                 parsed = JSON.parse(json);
             }
         } catch {
-            this.notification.add("Saved board data is not valid JSON.", { type: "danger" });
+            if (notify) {
+                this.notification.add(
+                    (
+                        "Saved board data is "
+                        + "not valid JSON."
+                    ),
+                    {
+                        type: "danger",
+                    }
+                );
+            }
+
             return false;
         }
 
         this._isApplyingHistory = true;
 
         try {
-            await new Promise((resolve) => {
-                this.canvas.loadFromJSON(parsed, () => {
-                    this.canvas.requestRenderAll();
-                    resolve();
-                });
-            });
+            await new Promise(
+                (resolve, reject) => {
+                    try {
+                        this.canvas.loadFromJSON(
+                            parsed,
+                            () => {
+                                this.canvas.requestRenderAll();
+                                resolve();
+                            }
+                        );
+                    } catch (error) {
+                        reject(error);
+                    }
+                }
+            );
 
             return true;
         } catch {
-            this.notification.add("Could not render saved whiteboard data.", { type: "danger" });
+            if (notify) {
+                this.notification.add(
+                    (
+                        "Could not render saved "
+                        + "whiteboard data."
+                    ),
+                    {
+                        type: "danger",
+                    }
+                );
+            }
+
             return false;
         } finally {
             this._isApplyingHistory = false;
