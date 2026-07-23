@@ -117,6 +117,31 @@
                                                t-att-disabled="state.loading or state.saving"/>
                                     </div>
                                 </div>
+
+                                <div t-if="state.canvasLimitWarning"
+                                     t-attf-class="o_wb_canvas_limit #{state.canvasLimitExceeded ? 'is-exceeded' : ''}">
+                                    <div class="o_wb_canvas_limit_header">
+                                        <i t-attf-class="fa #{state.canvasLimitExceeded ? 'fa-exclamation-triangle' : 'fa-tachometer'}"/>
+
+                                        <span>
+                                            <t t-if="state.canvasLimitExceeded">
+                                                Canvas limit exceeded
+                                            </t>
+
+                                            <t t-else="">
+                                                Canvas nearing limit
+                                            </t>
+                                        </span>
+                                    </div>
+
+                                    <div class="o_wb_canvas_limit_usage">
+                                        <t t-esc="state.canvasUsageText"/>
+                                    </div>
+
+                                    <div class="o_wb_canvas_limit_help">
+                                        Remove objects or simplify long freehand drawings to improve performance.
+                                    </div>
+                                </div>
                             </div>
                         </section>
 
@@ -465,7 +490,9 @@
                     <div class="o_whiteboard_canvas_area">
                         <t t-if="state.loading">
                             <div class="o_whiteboard_loading">
-                                <span class="fa fa-spinner fa-spin me-2"/> Loading whiteboard…
+                                <span class="fa fa-spinner fa-spin me-2"/>
+
+                                <t t-esc="state.loadingMessage"/>
                             </div>
                         </t>
 

@@ -212,6 +212,45 @@
   font-weight: 600;
   line-height: 1.35;
 }
+.o_wb_canvas_limit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+
+  padding: 10px 11px;
+
+  border: 1px solid var(--wb-warning-border);
+  border-radius: var(--wb-radius);
+  background: var(--wb-warning-bg);
+
+  color: var(--wb-warning-text);
+}
+
+.o_wb_canvas_limit.is-exceeded {
+  border-color: #fecaca;
+  background: var(--wb-danger-soft);
+  color: var(--wb-danger);
+}
+
+.o_wb_canvas_limit_header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.o_wb_canvas_limit_usage {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.o_wb_canvas_limit_help {
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.9;
+}
 /* -------------------------------------------------------------------------
  * Sidebar
  * ------------------------------------------------------------------------- */

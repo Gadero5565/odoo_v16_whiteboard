@@ -1,14 +1,6 @@
 /** @odoo-module **/
 
-import {
-    Component,
-    onMounted,
-    onWillStart,
-    onWillUnmount,
-    useRef,
-    useState,
-} from "@odoo/owl";
-
+import { Component, onMounted, onWillStart, onWillUnmount, useRef, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { useSetupAction } from "@web/webclient/actions/action_hook";
@@ -38,6 +30,13 @@ const BOARD_LIST_PAGE_SIZE = 25;
 const THUMBNAIL_MULTIPLIER = 0.18;
 const THUMBNAIL_JPEG_QUALITY = 0.72;
 
+const CANVAS_MAX_OBJECTS = 800;
+const CANVAS_MAX_JSON_BYTES = 1.5 * 1024 * 1024;
+const CANVAS_WARNING_RATIO = 0.75;
+
+const LARGE_BOARD_OBJECT_THRESHOLD = 250;
+const LARGE_BOARD_JSON_BYTES = 384 * 1024;
+
 export class WhiteboardAction extends Component {
     setup() {
         this.orm = useService("orm");
@@ -53,11 +52,19 @@ export class WhiteboardAction extends Component {
 
         this.state = useState({
             loading: true,
+            loadingMessage: "Loading whiteboard…",
             saving: false,
+
             boardId: this.initialBoardId,
             boardName: "My Whiteboard",
             boardRevision: null,
             dirty: false,
+
+            canvasObjectCount: 0,
+            canvasJsonBytes: 0,
+            canvasUsageText: "",
+            canvasLimitWarning: false,
+            canvasLimitExceeded: false,
 
             sidebarOpen: false,
 
@@ -74,43 +81,15 @@ export class WhiteboardAction extends Component {
             boardsNextOffset: 0,
         });
 
-        /*
-        * Dirty state has two independent sources:
-        *
-        * - canvasDirty: drawing, text, shape, undo/redo changes
-        * - nameDirty: board-name changes
-        *
-        * Keeping them separate means reverting the board name does not
-        * incorrectly clear unsaved canvas changes.
-        */
         this._canvasDirty = false;
         this._nameDirty = false;
         this._savedBoardName = "My Whiteboard";
 
-        /*
-        * Incremented whenever the corresponding editable content changes.
-        * These counters let us detect changes made while a save request
-        * is still in progress.
-        */
         this._canvasChangeVersion = 0;
         this._nameChangeVersion = 0;
 
-        /*
-        * One timer handles both normal debounce and delayed network retry.
-        */
         this._autosaveTimer = null;
-
-        /*
-        * A conflict must remain blocked until the board is reloaded.
-        * A validation failure remains blocked until the user changes
-        * something again.
-        */
         this._autosaveBlockedReason = null;
-
-        /*
-        * Avoid showing the same network error every ten seconds while the
-        * connection remains unavailable.
-        */
         this._autosaveFailureNotified = false;
 
         this.undoStack = [];
@@ -124,6 +103,7 @@ export class WhiteboardAction extends Component {
 
         this._isApplyingHistory = false;
         this._historyTimer = null;
+        this._limitRollbackInProgress = false;
 
         this._resizeCanvas = this._resizeCanvas.bind(this);
 
@@ -134,24 +114,15 @@ export class WhiteboardAction extends Component {
 
             ev.preventDefault();
             ev.returnValue = "";
-
             return "";
         };
 
         this._beforeLeave = () => {
-            /*
-             * Do not unmount the client action while its save request is
-             * still running. This prevents the response from arriving after
-             * the whiteboard component has already been destroyed.
-             */
             if (this.state.saving) {
                 this.notification.add(
                     "A whiteboard save is still in progress.",
-                    {
-                        type: "warning",
-                    }
+                    { type: "warning" }
                 );
-
                 return false;
             }
 
@@ -160,8 +131,7 @@ export class WhiteboardAction extends Component {
             }
 
             return window.confirm(
-                "You have unsaved whiteboard changes. "
-                + "Leave this page and discard them?"
+                "You have unsaved whiteboard changes. Leave this page and discard them?"
             );
         };
 
@@ -209,15 +179,8 @@ export class WhiteboardAction extends Component {
         });
 
         onWillUnmount(() => {
-            window.removeEventListener(
-                "resize",
-                this._resizeCanvas
-            );
-
-            window.removeEventListener(
-                "keydown",
-                this._handleKeyDown
-            );
+            window.removeEventListener("resize", this._resizeCanvas);
+            window.removeEventListener("keydown", this._handleKeyDown);
 
             this._cancelAutosave();
 
@@ -294,7 +257,13 @@ export class WhiteboardAction extends Component {
          * - object:removed handles object deletion
          * - text:changed is debounced so typing does not create a huge history stack
          */
-        this.canvas.on("path:created", () => this._pushHistory());
+        this.canvas.on("path:created", (ev) => {
+            const path = ev.path || ev.target;
+
+            this._pushHistory(true, {
+                rollbackObjects: path ? [path] : [],
+            });
+        });
 
         this.canvas.on("object:moving", (ev) => {
             this._updateConnectorsForObject(ev.target);
@@ -444,7 +413,13 @@ export class WhiteboardAction extends Component {
         this._updateAllConnectors();
         this.canvas.requestRenderAll();
 
-        this._pushHistory();
+        const accepted = this._pushHistory(true, {
+            rollbackObjects: [...result.objects],
+        });
+
+        if (!accepted) {
+            return;
+        }
 
         const template = this.state.templates.find((item) => item.code === templateCode);
         const templateName = template?.name || "Template";
@@ -475,10 +450,7 @@ export class WhiteboardAction extends Component {
     // -------------------------------------------------------------------------
 
     _syncDirtyState() {
-        this.state.dirty = (
-            this._canvasDirty
-            || this._nameDirty
-        );
+        this.state.dirty = this._canvasDirty || this._nameDirty;
 
         if (!this.state.dirty) {
             this._cancelAutosave();
@@ -486,17 +458,7 @@ export class WhiteboardAction extends Component {
     }
 
     _clearRecoverableAutosaveBlock() {
-        /*
-         * A user edit may correct a validation problem, so validation
-         * failures can be retried after another change.
-         *
-         * A revision conflict cannot be fixed by further local edits.
-         * The board must be reloaded first.
-         */
-        if (
-            this._autosaveBlockedReason
-            === "validation"
-        ) {
+        if (this._autosaveBlockedReason === "validation") {
             this._autosaveBlockedReason = null;
         }
     }
@@ -517,10 +479,8 @@ export class WhiteboardAction extends Component {
 
         this._canvasDirty = false;
         this._nameDirty = false;
-
         this._canvasChangeVersion = 0;
         this._nameChangeVersion = 0;
-
         this._autosaveBlockedReason = null;
         this._autosaveFailureNotified = false;
 
@@ -539,10 +499,7 @@ export class WhiteboardAction extends Component {
             this._clearRecoverableAutosaveBlock();
         }
 
-        this._nameDirty = (
-            nextName !== this._savedBoardName
-        );
-
+        this._nameDirty = nextName !== this._savedBoardName;
         this._syncDirtyState();
 
         if (this.state.dirty) {
@@ -559,9 +516,7 @@ export class WhiteboardAction extends Component {
         this._autosaveTimer = null;
     }
 
-    _scheduleAutosave(
-        delay = AUTOSAVE_DEBOUNCE_MS
-    ) {
+    _scheduleAutosave(delay = AUTOSAVE_DEBOUNCE_MS) {
         this._cancelAutosave();
 
         if (
@@ -574,13 +529,10 @@ export class WhiteboardAction extends Component {
             return;
         }
 
-        this._autosaveTimer = window.setTimeout(
-            () => {
-                this._autosaveTimer = null;
-                void this._runAutosave();
-            },
-            delay
-        );
+        this._autosaveTimer = window.setTimeout(() => {
+            this._autosaveTimer = null;
+            void this._runAutosave();
+        }, delay);
     }
 
     async _runAutosave() {
@@ -594,9 +546,7 @@ export class WhiteboardAction extends Component {
             return;
         }
 
-        await this._saveBoard({
-            manual: false,
-        });
+        await this._saveBoard({ manual: false });
     }
 
     // -------------------------------------------------------------------------
@@ -666,42 +616,48 @@ export class WhiteboardAction extends Component {
     }
 
     addText() {
-    const fabric = window.fabric;
-    if (!fabric || !this.canvas) return;
+        const fabric = window.fabric;
+        if (!fabric || !this.canvas) return;
 
-    this.state.mode = "text";
-    this.state.connectorFromNodeId = null;
+        this.state.mode = "text";
+        this.state.connectorFromNodeId = null;
 
-    this.canvas.isDrawingMode = false;
-    this.canvas.selection = true;
-    this.canvas.defaultCursor = "text";
+        this.canvas.isDrawingMode = false;
+        this.canvas.selection = true;
+        this.canvas.defaultCursor = "text";
 
-    const point = this._getInsertPoint();
+        const point = this._getInsertPoint();
 
-    const text = new fabric.IText("Type here", {
-        left: point.x,
-        top: point.y,
-        originX: "center",
-        originY: "center",
-        fontSize: 28,
-        fill: this.state.color,
-    });
+        const text = new fabric.IText("Type here", {
+            left: point.x,
+            top: point.y,
+            originX: "center",
+            originY: "center",
+            fontSize: 28,
+            fill: this.state.color,
+        });
 
-    text.on("editing:exited", () => {
-        if (this.state.mode === "text") {
-            this.setSelect();
+        text.on("editing:exited", () => {
+            if (this.state.mode === "text") {
+                this.setSelect();
+            }
+        });
+
+        this.canvas.add(text);
+        this.canvas.setActiveObject(text);
+        this.canvas.requestRenderAll();
+
+        const accepted = this._pushHistory(true, {
+            rollbackObjects: [text],
+        });
+
+        if (!accepted) {
+            return;
         }
-    });
 
-    this.canvas.add(text);
-    this.canvas.setActiveObject(text);
-    this.canvas.requestRenderAll();
-
-    text.enterEditing();
-    text.selectAll();
-
-    this._pushHistory();
-}
+        text.enterEditing();
+        text.selectAll();
+    }
 
     clearCanvas() {
         if (!this.canvas) return;
@@ -717,56 +673,50 @@ export class WhiteboardAction extends Component {
     }
 
     undo() {
-    if (!this.canvas) {
-        return;
-    }
-
-    /*
-     * Commit pending debounced text changes before deciding whether
-     * an undo state exists.
-     */
-    this._flushDebouncedHistory();
-
-    if (this.undoStack.length <= 1) {
-        return;
-    }
-
-    const current = this.undoStack.pop();
-    this.redoStack.push(current);
-
-    const previous = (
-        this.undoStack[
-            this.undoStack.length - 1
-        ]
-    );
-
-    this._applyJSON(previous.json).then((ok) => {
-        if (ok) {
-            this._markCanvasDirty();
+        if (!this.canvas) {
+            return;
         }
-    });
-}
+
+        this._flushDebouncedHistory();
+
+        if (this.undoStack.length <= 1) {
+            return;
+        }
+
+        const current = this.undoStack.pop();
+        this.redoStack.push(current);
+
+        const previous = this.undoStack[this.undoStack.length - 1];
+
+        this._applyJSON(previous.json).then((ok) => {
+            if (ok) {
+                this._updateCanvasUsage(this._getPreviousHistoryStats(previous));
+                this._markCanvasDirty();
+            }
+        });
+    }
 
     redo() {
-    if (!this.canvas) {
-        return;
-    }
-
-    this._flushDebouncedHistory();
-
-    if (!this.redoStack.length) {
-        return;
-    }
-
-    const next = this.redoStack.pop();
-    this.undoStack.push(next);
-
-    this._applyJSON(next.json).then((ok) => {
-        if (ok) {
-            this._markCanvasDirty();
+        if (!this.canvas) {
+            return;
         }
-    });
-}
+
+        this._flushDebouncedHistory();
+
+        if (!this.redoStack.length) {
+            return;
+        }
+
+        const next = this.redoStack.pop();
+        this.undoStack.push(next);
+
+        this._applyJSON(next.json).then((ok) => {
+            if (ok) {
+                this._updateCanvasUsage(this._getPreviousHistoryStats(next));
+                this._markCanvasDirty();
+            }
+        });
+    }
 
     exportPNG() {
         if (!this.canvas) return;
@@ -900,7 +850,9 @@ export class WhiteboardAction extends Component {
         this.canvas.setActiveObject(object);
         this.canvas.requestRenderAll();
 
-        this._pushHistory();
+        this._pushHistory(true, {
+            rollbackObjects: [object],
+        });
     }
 
     addRectangle() {
@@ -945,7 +897,9 @@ export class WhiteboardAction extends Component {
         this.canvas.setActiveObject(arrow);
         this.canvas.requestRenderAll();
 
-        this._pushHistory();
+        this._pushHistory(true, {
+            rollbackObjects: [arrow],
+        });
     }
 
     /* -------------------------------------------------------------------------
@@ -974,7 +928,9 @@ export class WhiteboardAction extends Component {
         this.canvas.setActiveObject(node);
         this.canvas.requestRenderAll();
 
-        this._pushHistory();
+        this._pushHistory(true, {
+            rollbackObjects: [node],
+        });
     }
 
     addMindChild() {
@@ -1017,7 +973,15 @@ export class WhiteboardAction extends Component {
         this.canvas.setActiveObject(childNode);
         this.canvas.requestRenderAll();
 
-        this._pushHistory();
+        const addedObjects = [childNode];
+
+        if (connector) {
+            addedObjects.push(connector);
+        }
+
+        this._pushHistory(true, {
+            rollbackObjects: addedObjects,
+        });
     }
 
     /* -------------------------------------------------------------------------
@@ -1046,7 +1010,9 @@ export class WhiteboardAction extends Component {
         this.canvas.setActiveObject(node);
         this.canvas.requestRenderAll();
 
-        this._pushHistory();
+        this._pushHistory(true, {
+            rollbackObjects: [node],
+        });
     }
 
     addFlowTerminator() {
@@ -1228,7 +1194,14 @@ export class WhiteboardAction extends Component {
 
         this.state.connectorFromNodeId = null;
 
-        this._pushHistory();
+        const accepted = this._pushHistory(true, {
+            rollbackObjects: [connector],
+        });
+
+        if (!accepted) {
+            this.state.connectorFromNodeId = null;
+            return;
+        }
     }
 
     /* -------------------------------------------------------------------------
@@ -1478,85 +1451,40 @@ export class WhiteboardAction extends Component {
 
         this.state.boardsLoading = true;
 
-        const offset = append
-            ? this.state.boardsNextOffset
-            : 0;
+        const offset = append ? this.state.boardsNextOffset : 0;
 
         try {
             const result = await this.orm.call(
                 "whiteboard.board",
                 "get_user_boards",
-                [
-                    offset,
-                    BOARD_LIST_PAGE_SIZE,
-                    this.state.boardId,
-                ]
+                [offset, BOARD_LIST_PAGE_SIZE, this.state.boardId]
             );
 
-            const pageBoards = Array.isArray(
-                result?.boards
-            )
-                ? result.boards
-                : [];
-
-            const currentBoard = (
-                result?.current_board
-                || null
-            );
+            const pageBoards = Array.isArray(result?.boards) ? result.boards : [];
+            const currentBoard = result?.current_board || null;
 
             const candidates = append
-                ? [
-                    ...this.state.boards,
-                    ...pageBoards,
-                ]
-                : [
-                    ...(currentBoard
-                        ? [currentBoard]
-                        : []),
-                    ...pageBoards,
-                ];
+                ? [...this.state.boards, ...pageBoards]
+                : [...(currentBoard ? [currentBoard] : []), ...pageBoards];
 
-            /*
-             * Remove duplicates while preserving the first occurrence.
-             * When an old current board is outside the first page, its
-             * separately returned selector item stays at the top.
-             */
             const seenBoardIds = new Set();
 
-            this.state.boards = candidates.filter(
-                (board) => {
-                    if (
-                        !board
-                        || !Number.isInteger(board.id)
-                        || seenBoardIds.has(board.id)
-                    ) {
-                        return false;
-                    }
-
-                    seenBoardIds.add(board.id);
-
-                    return true;
+            this.state.boards = candidates.filter((board) => {
+                if (!board || !Number.isInteger(board.id) || seenBoardIds.has(board.id)) {
+                    return false;
                 }
-            );
 
-            this.state.boardsHasMore = Boolean(
-                result?.has_more
-            );
+                seenBoardIds.add(board.id);
+                return true;
+            });
 
-            this.state.boardsNextOffset = (
-                Number.isInteger(
-                    result?.next_offset
-                )
-                    ? result.next_offset
-                    : offset + pageBoards.length
-            );
+            this.state.boardsHasMore = Boolean(result?.has_more);
+            this.state.boardsNextOffset = Number.isInteger(result?.next_offset)
+                ? result.next_offset
+                : offset + pageBoards.length;
 
             return this.state.boards;
         } catch {
-            /*
-             * Preserve already loaded pages when loading another page
-             * fails. Clear the list only when the initial request fails.
-             */
             if (!append) {
                 this.state.boards = [];
                 this.state.boardsHasMore = false;
@@ -1564,12 +1492,8 @@ export class WhiteboardAction extends Component {
             }
 
             this.notification.add(
-                append
-                    ? "Could not load more whiteboards."
-                    : "Could not load whiteboard list.",
-                {
-                    type: "danger",
-                }
+                append ? "Could not load more whiteboards." : "Could not load whiteboard list.",
+                { type: "danger" }
             );
 
             return this.state.boards;
@@ -1579,16 +1503,11 @@ export class WhiteboardAction extends Component {
     }
 
     async loadMoreBoards() {
-        if (
-            this.state.boardsLoading
-            || !this.state.boardsHasMore
-        ) {
+        if (this.state.boardsLoading || !this.state.boardsHasMore) {
             return;
         }
 
-        await this._loadBoardsList({
-            append: true,
-        });
+        await this._loadBoardsList({ append: true });
     }
 
     async _loadBoardFromServer(boardId = null) {
@@ -1629,40 +1548,29 @@ export class WhiteboardAction extends Component {
             return false;
         }
 
-        /*
-         * A pending timer must never save the previous board after a
-         * confirmed board switch.
-         */
         this._cancelAutosave();
-
         this._autosaveBlockedReason = null;
         this._autosaveFailureNotified = false;
 
+        const incomingCanvasStats = this._analyzeCanvasJSON(payload.data_json || "{}");
+
+        this.state.loadingMessage = this._isLargeBoard(incomingCanvasStats)
+            ? `Loading large whiteboard (${incomingCanvasStats.objects} objects)…`
+            : "Loading whiteboard…";
+
+        await this._waitForRenderFrame();
+
         this.state.boardId = payload.id;
+        this.state.boardName = payload.name || "Untitled Board";
+        this.state.boardRevision = Number.isInteger(payload.revision) ? payload.revision : 0;
 
-        this.state.boardName = (
-            payload.name
-            || "Untitled Board"
-        );
-
-        this.state.boardRevision = (
-            Number.isInteger(payload.revision)
-                ? payload.revision
-                : 0
-        );
-
-        this._savedBoardName = (
-            this.state.boardName
-        );
-
+        this._savedBoardName = this.state.boardName;
         this._nameDirty = false;
 
         let applied = true;
 
         if (payload.data_json) {
-            applied = await this._applyJSON(
-                payload.data_json
-            );
+            applied = await this._applyJSON(payload.data_json);
         } else {
             this._runWithoutHistory(() => {
                 this._clearCanvasObjects();
@@ -1670,6 +1578,7 @@ export class WhiteboardAction extends Component {
         }
 
         if (!applied) {
+            this.state.loadingMessage = "Loading whiteboard…";
             return false;
         }
 
@@ -1678,24 +1587,16 @@ export class WhiteboardAction extends Component {
         });
 
         this._resetHistoryFromCanvas();
-        this._resetDirtyState(
-            this.state.boardName
-        );
-
+        this._resetDirtyState(this.state.boardName);
         this._resizeCanvas();
 
+        this.state.loadingMessage = "Loading whiteboard…";
         return true;
     }
 
     async save() {
-        /*
-         * The Save button always takes priority over a pending autosave.
-         */
         this._cancelAutosave();
-
-        await this._saveBoard({
-            manual: true,
-        });
+        await this._saveBoard({ manual: true });
     }
 
     async _saveBoard({ manual = false } = {}) {
@@ -1708,37 +1609,36 @@ export class WhiteboardAction extends Component {
             return false;
         }
 
-        if (
-            !manual
-            && this._autosaveBlockedReason
-        ) {
+        if (!manual && this._autosaveBlockedReason) {
             return false;
         }
 
         this._cancelAutosave();
+        this._flushDebouncedHistory();
 
-        /*
-         * Capture exactly what this request is saving.
-         *
-         * The user may continue drawing or typing while the request is
-         * in progress. The version counters tell us whether newer local
-         * changes exist when the response arrives.
-         */
         const saveSnapshot = {
             boardId: this.state.boardId,
             boardRevision: this.state.boardRevision,
             boardName: this.state.boardName,
-            canvasChangeVersion:
-                this._canvasChangeVersion,
-            nameChangeVersion:
-                this._nameChangeVersion,
+            canvasChangeVersion: this._canvasChangeVersion,
+            nameChangeVersion: this._nameChangeVersion,
             dataJson: this._getCanvasJSON(),
         };
 
-        let nextAutosaveDelay = (
-            AUTOSAVE_DEBOUNCE_MS
-        );
+        const currentStats = this._analyzeCanvasJSON(saveSnapshot.dataJson);
+        const latestHistoryEntry = this.undoStack[this.undoStack.length - 1];
 
+        if (latestHistoryEntry?.json !== saveSnapshot.dataJson) {
+            const limitError = this._getCanvasLimitError(currentStats, latestHistoryEntry);
+
+            if (limitError) {
+                this._updateCanvasUsage(currentStats);
+                this.notification.add(limitError, { type: "warning" });
+                return false;
+            }
+        }
+
+        let nextAutosaveDelay = AUTOSAVE_DEBOUNCE_MS;
         this.state.saving = true;
 
         try {
@@ -1761,53 +1661,27 @@ export class WhiteboardAction extends Component {
             );
 
             if (result?.error) {
-                /*
-                 * Do not automatically repeat a conflict or validation
-                 * failure with the same invalid/stale content.
-                 */
-                this._autosaveBlockedReason = (
-                    result.conflict
-                        ? "conflict"
-                        : "validation"
-                );
+                this._autosaveBlockedReason = result.conflict ? "conflict" : "validation";
 
-                this.notification.add(
-                    result.error,
-                    {
-                        type: result.conflict
-                            ? "warning"
-                            : "danger",
-                    }
-                );
+                this.notification.add(result.error, {
+                    type: result.conflict ? "warning" : "danger",
+                });
 
                 return false;
             }
 
             if (!result?.board) {
-                this._autosaveBlockedReason = (
-                    "validation"
-                );
-
-                this.notification.add(
-                    "The whiteboard save returned an invalid response.",
-                    {
-                        type: "danger",
-                    }
-                );
-
+                this._autosaveBlockedReason = "validation";
+                this.notification.add("The whiteboard save returned an invalid response.", {
+                    type: "danger",
+                });
                 return false;
             }
 
             this.state.boardId = result.board.id;
 
-            if (
-                Number.isInteger(
-                    result.board.revision
-                )
-            ) {
-                this.state.boardRevision = (
-                    result.board.revision
-                );
+            if (Number.isInteger(result.board.revision)) {
+                this.state.boardRevision = result.board.revision;
             }
 
             const savedName = (
@@ -1819,43 +1693,21 @@ export class WhiteboardAction extends Component {
 
             this._savedBoardName = savedName;
 
-            /*
-             * Clear canvas dirty state only when no canvas edit occurred
-             * after this request captured its JSON.
-             */
-            if (
-                this._canvasChangeVersion
-                === saveSnapshot.canvasChangeVersion
-            ) {
+            if (this._canvasChangeVersion === saveSnapshot.canvasChangeVersion) {
                 this._canvasDirty = false;
             }
 
-            /*
-             * Do not overwrite text typed into the name field while the
-             * request was in progress.
-             */
-            if (
-                this._nameChangeVersion
-                === saveSnapshot.nameChangeVersion
-            ) {
+            if (this._nameChangeVersion === saveSnapshot.nameChangeVersion) {
                 this.state.boardName = savedName;
                 this._nameDirty = false;
             } else {
-                this._nameDirty = (
-                    this.state.boardName
-                    !== savedName
-                );
+                this._nameDirty = this.state.boardName !== savedName;
             }
 
             this._autosaveBlockedReason = null;
             this._autosaveFailureNotified = false;
-
             this._syncDirtyState();
 
-            /*
-             * Once everything represented by the counters has been
-             * saved, reset them to keep the values small.
-             */
             if (!this.state.dirty) {
                 this._canvasChangeVersion = 0;
                 this._nameChangeVersion = 0;
@@ -1863,63 +1715,256 @@ export class WhiteboardAction extends Component {
 
             await this._loadBoardsList();
 
-            /*
-             * Autosave succeeds silently. A manual save keeps the
-             * existing explicit success feedback.
-             */
             if (manual) {
-                this.notification.add(
-                    "Whiteboard saved.",
-                    {
-                        type: "success",
-                    }
-                );
+                this.notification.add("Whiteboard saved.", { type: "success" });
             }
 
             return true;
         } catch {
-            /*
-             * Network and transport errors remain retryable.
-             * Dirty state is intentionally preserved.
-             */
-            nextAutosaveDelay = (
-                AUTOSAVE_RETRY_MS
-            );
+            nextAutosaveDelay = AUTOSAVE_RETRY_MS;
 
-            if (
-                manual
-                || !this._autosaveFailureNotified
-            ) {
+            if (manual || !this._autosaveFailureNotified) {
                 this.notification.add(
                     manual
                         ? "Could not save whiteboard. Changes remain unsaved."
                         : "Autosave failed. Changes remain unsaved; retrying automatically.",
-                    {
-                        type: "danger",
-                    }
+                    { type: "danger" }
                 );
             }
 
             this._autosaveFailureNotified = true;
-
             return false;
         } finally {
             this.state.saving = false;
 
-            /*
-             * This also handles edits made while the request was in
-             * progress. If newer changes remain dirty, start another
-             * debounce cycle using the new server revision.
-             */
-            if (
-                this.state.dirty
-                && !this._autosaveBlockedReason
-            ) {
-                this._scheduleAutosave(
-                    nextAutosaveDelay
-                );
+            if (this.state.dirty && !this._autosaveBlockedReason) {
+                this._scheduleAutosave(nextAutosaveDelay);
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Canvas performance limits
+    // -------------------------------------------------------------------------
+
+    _countSerializedCanvasObjects(objects) {
+        if (!Array.isArray(objects)) {
+            return 0;
+        }
+
+        let count = 0;
+
+        for (const object of objects) {
+            if (!object || typeof object !== "object") {
+                continue;
+            }
+
+            count += 1;
+
+            if (Array.isArray(object.objects)) {
+                count += this._countSerializedCanvasObjects(object.objects);
+            }
+        }
+
+        return count;
+    }
+
+    _analyzeCanvasJSON(json) {
+        const safeJson = typeof json === "string" ? json : "{}";
+        let objectCount = 0;
+
+        try {
+            const payload = JSON.parse(safeJson);
+            objectCount = this._countSerializedCanvasObjects(payload?.objects);
+        } catch {
+            objectCount = 0;
+        }
+
+        return {
+            objects: objectCount,
+            bytes: this._getHistoryByteLength(safeJson),
+        };
+    }
+
+    _formatCanvasBytes(bytes) {
+        if (bytes < 1024) {
+            return `${bytes} B`;
+        }
+
+        if (bytes < 1024 * 1024) {
+            return `${Math.ceil(bytes / 1024)} KB`;
+        }
+
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    _isLargeBoard(stats) {
+        return (
+            stats.objects >= LARGE_BOARD_OBJECT_THRESHOLD
+            || stats.bytes >= LARGE_BOARD_JSON_BYTES
+        );
+    }
+
+    _updateCanvasUsage(stats) {
+        const objectRatio = stats.objects / CANVAS_MAX_OBJECTS;
+        const byteRatio = stats.bytes / CANVAS_MAX_JSON_BYTES;
+        const largestRatio = Math.max(objectRatio, byteRatio);
+
+        this.state.canvasObjectCount = stats.objects;
+        this.state.canvasJsonBytes = stats.bytes;
+        this.state.canvasLimitWarning = largestRatio >= CANVAS_WARNING_RATIO;
+        this.state.canvasLimitExceeded = (
+            stats.objects > CANVAS_MAX_OBJECTS
+            || stats.bytes > CANVAS_MAX_JSON_BYTES
+        );
+        this.state.canvasUsageText = (
+            `${stats.objects}/${CANVAS_MAX_OBJECTS} objects`
+            + " · "
+            + `${this._formatCanvasBytes(stats.bytes)}/${this._formatCanvasBytes(CANVAS_MAX_JSON_BYTES)}`
+        );
+    }
+
+    _getPreviousHistoryStats(entry) {
+        if (!entry) {
+            return null;
+        }
+
+        if (Number.isInteger(entry.objectCount) && Number.isFinite(entry.bytes)) {
+            return {
+                objects: entry.objectCount,
+                bytes: entry.bytes,
+            };
+        }
+
+        return this._analyzeCanvasJSON(entry.json);
+    }
+
+    _isReducingOversizedCanvas(nextStats, previousEntry) {
+        const previousStats = this._getPreviousHistoryStats(previousEntry);
+
+        if (!previousStats) {
+            return false;
+        }
+
+        const objectCountNotWorse = nextStats.objects <= previousStats.objects;
+        const byteCountNotWorse = nextStats.bytes <= previousStats.bytes;
+        const strictlyImproved = (
+            nextStats.objects < previousStats.objects
+            || nextStats.bytes < previousStats.bytes
+        );
+
+        return objectCountNotWorse && byteCountNotWorse && strictlyImproved;
+    }
+
+    _getCanvasLimitError(stats, previousEntry) {
+        const objectLimitExceeded = stats.objects > CANVAS_MAX_OBJECTS;
+        const byteLimitExceeded = stats.bytes > CANVAS_MAX_JSON_BYTES;
+
+        if (!objectLimitExceeded && !byteLimitExceeded) {
+            return null;
+        }
+
+        if (this._isReducingOversizedCanvas(stats, previousEntry)) {
+            return null;
+        }
+
+        if (objectLimitExceeded && byteLimitExceeded) {
+            return (
+                "Canvas limit reached. Remove some objects or simplify long drawings "
+                + "before adding more content."
+            );
+        }
+
+        if (objectLimitExceeded) {
+            return (
+                `Canvas contains more than ${CANVAS_MAX_OBJECTS} objects. `
+                + "Remove some objects before adding more."
+            );
+        }
+
+        return (
+            "Canvas data is too complex. Remove some objects or simplify long "
+            + "freehand drawings before adding more."
+        );
+    }
+
+    _rejectAddedCanvasObjects(objects, previousEntry, message) {
+        const rejectedObjects = Array.isArray(objects) ? objects.filter(Boolean) : [];
+        const rejectedObjectSet = new Set(rejectedObjects);
+        const rejectedIds = new Set(
+            rejectedObjects
+                .map((object) => object?.wbId)
+                .filter(Boolean)
+        );
+
+        this._cancelAutosave();
+
+        this._runWithoutHistory(() => {
+            this.canvas.discardActiveObject();
+
+            const canvasObjects = [...this.canvas.getObjects()];
+
+            for (const object of canvasObjects) {
+                if (
+                    rejectedObjectSet.has(object)
+                    || (object?.wbId && rejectedIds.has(object.wbId))
+                ) {
+                    this.canvas.remove(object);
+                }
+            }
+        });
+
+        this.canvas.requestRenderAll();
+
+        if (previousEntry) {
+            this._updateCanvasUsage(this._getPreviousHistoryStats(previousEntry));
+        }
+
+        this.notification.add(message, { type: "warning" });
+
+        if (this.state.dirty) {
+            this._scheduleAutosave();
+        }
+    }
+
+    _rollbackRejectedCanvasChange(previousEntry, message) {
+        if (this._limitRollbackInProgress) {
+            return;
+        }
+
+        this._cancelAutosave();
+        this.notification.add(message, { type: "warning" });
+
+        if (!previousEntry?.json) {
+            if (this.state.dirty) {
+                this._scheduleAutosave();
+            }
+            return;
+        }
+
+        this._limitRollbackInProgress = true;
+
+        void this._applyJSON(previousEntry.json)
+            .then((ok) => {
+                if (ok) {
+                    this._updateCanvasUsage(this._getPreviousHistoryStats(previousEntry));
+                }
+            })
+            .finally(() => {
+                this._limitRollbackInProgress = false;
+
+                if (this.state.dirty) {
+                    this._scheduleAutosave();
+                }
+            });
+    }
+
+    _waitForRenderFrame() {
+        return new Promise((resolve) => {
+            window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(resolve);
+            });
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -1927,26 +1972,20 @@ export class WhiteboardAction extends Component {
     // -------------------------------------------------------------------------
 
     _getHistoryByteLength(json) {
-        /*
-         * Use the UTF-8 byte size so Arabic and other multibyte text are
-         * measured accurately.
-         */
         if (this._historyEncoder) {
-            return this._historyEncoder.encode(
-                json
-            ).byteLength;
+            return this._historyEncoder.encode(json).byteLength;
         }
 
-        /*
-         * Fallback for an older browser environment without TextEncoder.
-         */
         return new Blob([json]).size;
     }
 
-    _createHistoryEntry(json) {
+    _createHistoryEntry(json, stats = null) {
+        const analyzedStats = stats || this._analyzeCanvasJSON(json);
+
         return {
             json,
-            bytes: this._getHistoryByteLength(json),
+            bytes: analyzedStats.bytes,
+            objectCount: analyzedStats.objects,
         };
     }
 
@@ -1965,19 +2004,9 @@ export class WhiteboardAction extends Component {
     }
 
     _trimHistoryToBudget() {
-        let totalEntries = (
-            this.undoStack.length
-            + this.redoStack.length
-        );
+        let totalEntries = this.undoStack.length + this.redoStack.length;
+        let totalBytes = this._getHistoryTotalBytes();
 
-        let totalBytes = (
-            this._getHistoryTotalBytes()
-        );
-
-        /*
-         * Remove the oldest undo entries first while always preserving
-         * the current canvas snapshot.
-         */
         while (
             this.undoStack.length > 1
             && (
@@ -1986,20 +2015,10 @@ export class WhiteboardAction extends Component {
             )
         ) {
             const removed = this.undoStack.shift();
-
             totalEntries -= 1;
             totalBytes -= removed.bytes;
         }
 
-        /*
-         * Normally redo cannot exceed the budget independently because
-         * undo only moves existing entries between stacks. This fallback
-         * makes the invariant safe even if future code changes that
-         * behavior.
-         *
-         * redoStack.pop() is the next redo operation, so shift() removes
-         * the farthest future state first.
-         */
         while (
             this.redoStack.length
             && (
@@ -2008,7 +2027,6 @@ export class WhiteboardAction extends Component {
             )
         ) {
             const removed = this.redoStack.shift();
-
             totalEntries -= 1;
             totalBytes -= removed.bytes;
         }
@@ -2022,48 +2040,57 @@ export class WhiteboardAction extends Component {
         if (
             !this.canvas
             || this._isApplyingHistory
+            || this._limitRollbackInProgress
         ) {
-            return;
+            return false;
         }
 
-        const markDirty = (
-            options.markDirty !== false
-        );
+        const markDirty = options.markDirty !== false;
+        const enforceLimits = options.enforceLimits !== false;
+        const rollbackObjects = Array.isArray(options.rollbackObjects)
+            ? options.rollbackObjects
+            : [];
 
         const json = this._getCanvasJSON();
-
-        const latest = (
-            this.undoStack[
-                this.undoStack.length - 1
-            ]
-        );
+        const latest = this.undoStack[this.undoStack.length - 1];
 
         if (latest?.json === json) {
-            return;
+            this._updateCanvasUsage(this._getPreviousHistoryStats(latest));
+            return true;
         }
 
-        const entry = this._createHistoryEntry(
-            json
-        );
+        const stats = this._analyzeCanvasJSON(json);
 
+        if (enforceLimits) {
+            const limitError = this._getCanvasLimitError(stats, latest);
+
+            if (limitError) {
+                if (rollbackObjects.length) {
+                    this._rejectAddedCanvasObjects(rollbackObjects, latest, limitError);
+                } else {
+                    this._rollbackRejectedCanvasChange(latest, limitError);
+                }
+
+                return false;
+            }
+        }
+
+        const entry = this._createHistoryEntry(json, stats);
         this.undoStack.push(entry);
 
         if (resetRedo) {
             this.redoStack = [];
         }
 
-        /*
-         * Apply both limits after adding the newest state. The newest
-         * current state is always retained, even if that single state is
-         * unusually large.
-         */
         this._trimHistoryToBudget();
+        this._updateCanvasUsage(stats);
 
         if (markDirty) {
             this._markCanvasDirty();
         }
-    }
 
+        return true;
+    }
     _pushHistoryDebounced() {
         if (this._historyTimer) {
             clearTimeout(this._historyTimer);
@@ -2084,27 +2111,21 @@ export class WhiteboardAction extends Component {
     }
 
     _resetHistoryFromCanvas() {
-    if (!this.canvas) {
-        return;
-    }
-
-    this.undoStack = [];
-    this.redoStack = [];
-
-    this._pushHistory(
-        true,
-        {
-            markDirty: false,
+        if (!this.canvas) {
+            return;
         }
-    );
 
-    /*
-     * Reset only the canvas dirty source. A pending board-name change
-     * must remain dirty.
-     */
-    this._canvasDirty = false;
-    this._syncDirtyState();
-}
+        this.undoStack = [];
+        this.redoStack = [];
+
+        this._pushHistory(true, {
+            markDirty: false,
+            enforceLimits: false,
+        });
+
+        this._canvasDirty = false;
+        this._syncDirtyState();
+    }
 
     _runWithoutHistory(callback) {
         this._isApplyingHistory = true;
@@ -2167,4 +2188,3 @@ export class WhiteboardAction extends Component {
 WhiteboardAction.template = "odoo_whiteboard.WhiteboardAction";
 
 registry.category("actions").add("odoo_whiteboard.whiteboard_action", WhiteboardAction);
-
